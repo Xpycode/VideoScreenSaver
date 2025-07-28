@@ -9,4 +9,7 @@
 
 @interface Video_Screen_SaverView : ScreenSaverView
 
+- (BOOL)hasConfigureSheet;
+- (NSWindow *)configureSheet;
+
 @end
