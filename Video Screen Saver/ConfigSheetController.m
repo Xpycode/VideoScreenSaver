@@ -13,6 +13,11 @@
 
 @implementation ConfigSheetController
 
+// In ConfigSheetController.m, inside the @implementation block
+- (IBAction)okButtonClicked:(id)sender {
+    // Save preferences, dismiss sheet, etc.
+}
+
 - (void)windowDidLoad {
     [super windowDidLoad];
     

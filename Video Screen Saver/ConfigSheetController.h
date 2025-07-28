@@ -10,6 +10,14 @@
 NS_ASSUME_NONNULL_BEGIN
 
 @interface ConfigSheetController : NSWindowController
+@property (weak) IBOutlet NSButton *chooseFolder;
+@property (weak) IBOutlet NSTextField *folderLabel;
+@property (weak) IBOutlet NSButton *shuffle;
+@property (weak) IBOutlet NSButton *loop;
+
+// In ConfigSheetController.h
+- (IBAction)chooseFolderClicked:(id)sender;
+- (IBAction)okButtonClicked:(id)sender;
 
 @end
 
