@@ -6,10 +6,8 @@
 //
 
 #import <ScreenSaver/ScreenSaver.h>
+#import <AVFoundation/AVFoundation.h>
 
 @interface Video_Screen_SaverView : ScreenSaverView
-
-- (BOOL)hasConfigureSheet;
-- (NSWindow *)configureSheet;
 
 @end
