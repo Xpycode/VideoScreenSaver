@@ -6,9 +6,8 @@
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>Video Screen Saver</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.example.VideoScreenSaver</string>
-    <key>CFBundleInfoDictionaryVersion</key>
+    	<key>CFBundleIdentifier</key>
+    	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>    <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>Video Screen Saver</string>
@@ -21,6 +20,6 @@
     <key>NSPrincipalClass</key>
     <string>Video_Screen_SaverView</string>
     <key>NSScreenSaverDefaults</key>
-    <string>com.example.VideoScreenSaver</string>
+    <string>VideoScreenSaverModule</string>
 </dict>
 </plist>
