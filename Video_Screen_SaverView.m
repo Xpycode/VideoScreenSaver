@@ -7,8 +7,9 @@
 
 @interface Video_Screen_SaverView () {
     AVPlayerView *_playerView;
+    AVQueuePlayer *_queuePlayer;
     NSArray<NSURL *> *_videoURLs;
-    NSUInteger _currentVideoIndex;
+    id _itemEndObserver;
 }
 @end
 
@@ -28,7 +29,26 @@
     _playerView = [[AVPlayerView alloc] initWithFrame:self.bounds];
     _playerView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     _playerView.controlsStyle = AVPlayerViewControlsStyleNone;
+    _playerView.videoGravity = AVLayerVideoGravityResizeAspectFill;
+    _queuePlayer = [[AVQueuePlayer alloc] init];
+    _queuePlayer.actionAtItemEnd = AVPlayerActionAtItemEndAdvance;
+    _playerView.player = _queuePlayer;
     [self addSubview:_playerView];
+
+    // Observer to automatically queue next video
+    __weak typeof(self) weakSelf = self;
+    _itemEndObserver = [[NSNotificationCenter defaultCenter] addObserverForName:AVPlayerItemDidPlayToEndTimeNotification
+                                                                          object:nil
+                                                                           queue:[NSOperationQueue mainQueue]
+                                                                      usingBlock:^(NSNotification *note) {
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (strongSelf && strongSelf->_videoURLs.count > 0) {
+            // Queue the next video
+            NSURL *nextURL = strongSelf->_videoURLs[arc4random_uniform((uint32_t)strongSelf->_videoURLs.count)];
+            AVPlayerItem *nextItem = [AVPlayerItem playerItemWithURL:nextURL];
+            [strongSelf->_queuePlayer insertItem:nextItem afterItem:nil];
+        }
+    }];
 }
 
 - (void)loadVideosAndPlay {
@@ -45,44 +65,84 @@
         }
     }
     _videoURLs = videoURLs;
-    _currentVideoIndex = 0;
-    [self playCurrentVideo];
-}
 
-- (void)playCurrentVideo {
     if (_videoURLs.count == 0) return;
-    AVPlayer *player = [AVPlayer playerWithURL:_videoURLs[_currentVideoIndex]];
-    _playerView.player = player;
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerItemDidReachEnd:) name:AVPlayerItemDidPlayToEndTimeNotification object:player.currentItem];
-    [player play];
+
+    [_queuePlayer removeAllItems];
+
+    // Queue initial videos - start with 2 to enable smooth transitions
+    for (int i = 0; i < MIN(2, (int)_videoURLs.count); i++) {
+        NSURL *url = _videoURLs[arc4random_uniform((uint32_t)_videoURLs.count)];
+        AVPlayerItem *item = [AVPlayerItem playerItemWithURL:url];
+        [_queuePlayer insertItem:item afterItem:nil];
+    }
+
+    [_queuePlayer play];
 }
 
-- (void)playerItemDidReachEnd:(NSNotification *)notification {
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:notification.object];
-    _currentVideoIndex = (_currentVideoIndex + 1) % _videoURLs.count;
-    [self playCurrentVideo];
+- (void)stopAnimation {
+    [super stopAnimation];
+    [_queuePlayer pause];
+    [_queuePlayer removeAllItems];
+}
+
+- (void)dealloc {
+    if (_itemEndObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:_itemEndObserver];
+        _itemEndObserver = nil;
+    }
+    [_queuePlayer pause];
+    [_queuePlayer removeAllItems];
+    _queuePlayer = nil;
+    _playerView.player = nil;
 }
 
 #pragma mark - Config Sheet
 
 - (NSWindow *)configureSheet {
-    NSButton *chooseButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 20, 200, 32)];
-    [chooseButton setTitle:@"Choose Video Folder..."];
-    [chooseButton setButtonType:NSButtonTypeMomentaryPushIn];
-    [chooseButton setBezelStyle:NSBezelStyleRounded];
-    [chooseButton setTarget:self];
-    [chooseButton setAction:@selector(chooseFolderClicked:)];
+    if (!self.configureSheet) {
+        NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 120)];
 
-    NSView *contentView = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 72)];
-    [contentView addSubview:chooseButton];
+        NSButton *chooseButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 60, 200, 32)];
+        [chooseButton setTitle:@"Choose Video Folder..."];
+        [chooseButton setButtonType:NSButtonTypeMomentaryPushIn];
+        [chooseButton setBezelStyle:NSBezelStyleRounded];
+        [chooseButton setTarget:self];
+        [chooseButton setAction:@selector(chooseFolderClicked:)];
+        [contentView addSubview:chooseButton];
 
-    NSWindow *sheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 240, 72)
-                                                  styleMask:NSWindowStyleMaskTitled
-                                                    backing:NSBackingStoreBuffered
-                                                      defer:NO];
-    [sheet setContentView:contentView];
-    [sheet setTitle:@"Video Screen Saver Settings"];
-    return sheet;
+        NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(140, 20, 80, 32)];
+        [okButton setTitle:@"OK"];
+        [okButton setButtonType:NSButtonTypeMomentaryPushIn];
+        [okButton setBezelStyle:NSBezelStyleRounded];
+        [okButton setTarget:self];
+        [okButton setAction:@selector(okClicked:)];
+        [contentView addSubview:okButton];
+
+        NSButton *cancelButton = [[NSButton alloc] initWithFrame:NSMakeRect(50, 20, 80, 32)];
+        [cancelButton setTitle:@"Cancel"];
+        [cancelButton setButtonType:NSButtonTypeMomentaryPushIn];
+        [cancelButton setBezelStyle:NSBezelStyleRounded];
+        [cancelButton setTarget:self];
+        [cancelButton setAction:@selector(cancelClicked:)];
+        [contentView addSubview:cancelButton];
+
+        self.configureSheet = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 240, 120)
+                                                          styleMask:NSWindowStyleMaskTitled
+                                                            backing:NSBackingStoreBuffered
+                                                              defer:NO];
+        [self.configureSheet setContentView:contentView];
+        [self.configureSheet setTitle:@"Video Screen Saver Settings"];
+    }
+    return self.configureSheet;
+}
+
+- (void)okClicked:(id)sender {
+    [NSApp endSheet:self.configureSheet];
+}
+
+- (void)cancelClicked:(id)sender {
+    [NSApp endSheet:self.configureSheet];
 }
 
 - (void)chooseFolderClicked:(id)sender {
@@ -91,7 +151,7 @@
     panel.canChooseFiles = NO;
     panel.allowsMultipleSelection = NO;
     panel.directoryURL = [NSURL fileURLWithPath:@"/Users/Shared/"];
-    [panel beginWithCompletionHandler:^(NSModalResponse result) {
+    [panel beginSheetModalForWindow:self.configureSheet completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK) {
             NSString *selectedPath = panel.URL.path;
             [[NSUserDefaults standardUserDefaults] setObject:selectedPath forKey:kVideoFolderDefaultsKey];
