@@ -14,6 +14,7 @@
 
 // UserDefaults Keys
 static NSString * const kVideoFolderBookmarkKey = @"videoFolderBookmark";
+static NSString * const kVideoFoldersBookmarksKey = @"videoFoldersBookmarks"; // Array of bookmarks
 static NSString * const kEnableAudioKey = @"enableAudio";
 static NSString * const kShuffleKey = @"shuffle";
 static NSString * const kLoopKey = @"loop";
@@ -29,7 +30,7 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     TransitionTypeCrossDissolve
 };
 
-@interface Video_Screen_SaverView ()
+@interface Video_Screen_SaverView () <NSTableViewDelegate, NSTableViewDataSource>
 
 // Configuration Sheet Properties
 @property (strong) NSWindow *configSheet;
@@ -40,6 +41,13 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 @property (strong) NSPopUpButton *transitionPopUpButton;
 @property (strong) NSSlider *durationSlider;
 @property (strong) NSTextField *durationLabel;
+
+// Two-pane UI Properties
+@property (strong) NSTableView *categoryTableView;
+@property (strong) NSTableView *foldersTableView;
+@property (strong) NSMutableArray<NSData *> *folderBookmarks;
+@property (strong) NSTextField *emptyStateLabel;
+@property (strong) NSView *rightPaneView;
 
 // Video playback properties
 @property (strong) NSArray<NSURL *> *videoURLs;
@@ -195,19 +203,55 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 
 - (void)loadPlaylistAndStartPlayback {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    // ... folder bookmark resolution ... (shortened for clarity)
-    id bookmarkObject = [defaults objectForKey:kVideoFolderBookmarkKey];
-    if (!bookmarkObject || ![bookmarkObject isKindOfClass:[NSData class]]) { return; }
-    NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject options:NSURLBookmarkResolutionWithSecurityScope relativeToURL:nil bookmarkDataIsStale:NULL error:NULL];
-    if (!folderURL || ![folderURL startAccessingSecurityScopedResource]) { return; }
-    
-    self.videoURLs = [self getVideoURLsFromFolder:folderURL];
-    [folderURL stopAccessingSecurityScopedResource];
+
+    // Try new multiple folders format first
+    NSArray *bookmarksArray = [defaults objectForKey:kVideoFoldersBookmarksKey];
+    NSMutableArray<NSURL *> *allVideoURLs = [NSMutableArray array];
+
+    if (bookmarksArray && [bookmarksArray isKindOfClass:[NSArray class]] && bookmarksArray.count > 0) {
+        // Multiple folders mode
+        for (id bookmarkObject in bookmarksArray) {
+            if (![bookmarkObject isKindOfClass:[NSData class]]) continue;
+
+            NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
+                                                         options:NSURLBookmarkResolutionWithSecurityScope
+                                                   relativeToURL:nil
+                                             bookmarkDataIsStale:NULL
+                                                           error:NULL];
+            if (!folderURL) continue;
+
+            if ([folderURL startAccessingSecurityScopedResource]) {
+                NSArray<NSURL *> *folderVideos = [self getVideoURLsFromFolder:folderURL];
+                [allVideoURLs addObjectsFromArray:folderVideos];
+                [folderURL stopAccessingSecurityScopedResource];
+            }
+        }
+    } else {
+        // Migration: check for legacy single folder bookmark
+        id bookmarkObject = [defaults objectForKey:kVideoFolderBookmarkKey];
+        if (bookmarkObject && [bookmarkObject isKindOfClass:[NSData class]]) {
+            NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
+                                                         options:NSURLBookmarkResolutionWithSecurityScope
+                                                   relativeToURL:nil
+                                             bookmarkDataIsStale:NULL
+                                                           error:NULL];
+            if (folderURL && [folderURL startAccessingSecurityScopedResource]) {
+                allVideoURLs = [[self getVideoURLsFromFolder:folderURL] mutableCopy];
+                [folderURL stopAccessingSecurityScopedResource];
+
+                // Migrate to new format
+                [defaults setObject:@[bookmarkObject] forKey:kVideoFoldersBookmarksKey];
+                [defaults synchronize];
+            }
+        }
+    }
+
+    self.videoURLs = [allVideoURLs copy];
 
     if ([defaults boolForKey:kShuffleKey] && self.videoURLs.count > 1) {
         self.videoURLs = [self shuffledArrayFromArray:self.videoURLs];
     }
-    
+
     if (self.videoURLs.count > 0) {
         [self loadVideoDurationsWithCompletion:^{
             self.currentVideoIndex = -1;
@@ -491,95 +535,326 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 }
 
 
-#pragma mark - Configuration Sheet (Unchanged)
+#pragma mark - Configuration Sheet
 - (BOOL)hasConfigureSheet { return YES; }
+
 - (NSWindow*)configureSheet {
     if (!self.configSheet) {
-        NSRect frame = NSMakeRect(0, 0, 440, 280);
-        self.configSheet = [[NSWindow alloc] initWithContentRect:frame styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable) backing:NSBackingStoreBuffered defer:NO];
+        // Load saved bookmarks
+        ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+        NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
+        self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
+
+        // Create window (600x350)
+        NSRect frame = NSMakeRect(0, 0, 600, 350);
+        self.configSheet = [[NSWindow alloc] initWithContentRect:frame
+                                                       styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+                                                         backing:NSBackingStoreBuffered
+                                                           defer:NO];
         self.configSheet.title = @"Video Screen Saver Settings";
         NSView *contentView = self.configSheet.contentView;
-        int leftX = 20;
-        self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftX, 130, 150, 24)];
-        [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch]; self.enableAudioCheckbox.title = @"Enable Audio";
-        self.enableAudioCheckbox.target = self; self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
-        [contentView addSubview:self.enableAudioCheckbox];
-        self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftX, 100, 150, 24)];
-        [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch]; self.shuffleCheckbox.title = @"Shuffle Videos";
-        self.shuffleCheckbox.target = self; self.shuffleCheckbox.action = @selector(settingCheckboxClicked:);
-        [contentView addSubview:self.shuffleCheckbox];
-        self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftX, 70, 150, 24)];
-        [self.loopCheckbox setButtonType:NSButtonTypeSwitch]; self.loopCheckbox.title = @"Loop Playlist";
-        self.loopCheckbox.target = self; self.loopCheckbox.action = @selector(settingCheckboxClicked:);
-        [contentView addSubview:self.loopCheckbox];
-        int rightX = 220;
-        NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 132, 80, 24)];
-        transitionLabel.stringValue = @"Transition:"; transitionLabel.editable = NO; transitionLabel.bezeled = NO; transitionLabel.drawsBackground = NO;
-        [contentView addSubview:transitionLabel];
-        self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(rightX + 80, 130, 140, 24)];
-        [self.transitionPopUpButton addItemsWithTitles:@[@"None", @"Fade", @"Cross Dissolve"]];
-        self.transitionPopUpButton.target = self; self.transitionPopUpButton.action = @selector(transitionChanged:);
-        [contentView addSubview:self.transitionPopUpButton];
-        NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX, 102, 80, 24)];
-        durationTitleLabel.stringValue = @"Duration:"; durationTitleLabel.editable = NO; durationTitleLabel.bezeled = NO; durationTitleLabel.drawsBackground = NO;
-        [contentView addSubview:durationTitleLabel];
-        self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(rightX, 75, 200, 24)];
-        self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
-        self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
-        [contentView addSubview:self.durationSlider];
-        self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(rightX + 90, 102, 100, 24)];
-        self.durationLabel.editable = NO; self.durationLabel.bezeled = NO; self.durationLabel.drawsBackground = NO;
-        [contentView addSubview:self.durationLabel];
-        self.folderLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, 240, 400, 24)];
-        self.folderLabel.editable = NO; self.folderLabel.bezeled = NO; self.folderLabel.drawsBackground = NO; self.folderLabel.selectable = NO;
-        [contentView addSubview:self.folderLabel];
-        NSButton *chooseButton = [[NSButton alloc] initWithFrame:NSMakeRect(20, 200, 140, 32)];
-        chooseButton.title = @"Choose Folder…"; chooseButton.bezelStyle = NSBezelStyleRounded;
-        chooseButton.target = self; chooseButton.action = @selector(chooseFolderClicked:);
-        [contentView addSubview:chooseButton];
-        NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(340, 20, 80, 32)];
-        okButton.title = @"OK"; okButton.bezelStyle = NSBezelStyleRounded; okButton.keyEquivalent = @"\r";
-        okButton.target = self; okButton.action = @selector(closeConfigSheet:);
+
+        // Left pane - Category list (150x260, 20px margins)
+        NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 260)];
+        categoryScrollView.hasVerticalScroller = YES;
+        categoryScrollView.borderType = NSBezelBorder;
+
+        self.categoryTableView = [[NSTableView alloc] initWithFrame:categoryScrollView.bounds];
+        NSTableColumn *categoryColumn = [[NSTableColumn alloc] initWithIdentifier:@"category"];
+        categoryColumn.width = 148;
+        [self.categoryTableView addTableColumn:categoryColumn];
+        self.categoryTableView.headerView = nil;
+        self.categoryTableView.delegate = self;
+        self.categoryTableView.dataSource = self;
+        categoryScrollView.documentView = self.categoryTableView;
+        [contentView addSubview:categoryScrollView];
+
+        // Right pane container (390x260)
+        self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 260)];
+        [contentView addSubview:self.rightPaneView];
+
+        // OK button
+        NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, 20, 80, 32)];
+        okButton.title = @"OK";
+        okButton.bezelStyle = NSBezelStyleRounded;
+        okButton.keyEquivalent = @"\r";
+        okButton.target = self;
+        okButton.action = @selector(closeConfigSheet:);
         [contentView addSubview:okButton];
+
+        // Select Source Folders by default
+        [self.categoryTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+        [self setupSourceFoldersPane];
     }
-    
-    [self updateFolderLabel];
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    self.enableAudioCheckbox.state = [defaults boolForKey:kEnableAudioKey] ? NSControlStateValueOn : NSControlStateValueOff;
-    self.shuffleCheckbox.state = [defaults boolForKey:kShuffleKey] ? NSControlStateValueOn : NSControlStateValueOff;
-    self.loopCheckbox.state = [defaults boolForKey:kLoopKey] ? NSControlStateValueOn : NSControlStateValueOff;
-    [self.transitionPopUpButton selectItemAtIndex:[defaults integerForKey:kTransitionTypeKey]];
-    self.durationSlider.doubleValue = [defaults doubleForKey:kTransitionDurationKey];
-    [self updateDurationLabel];
-    [self transitionChanged:self.transitionPopUpButton];
+
+    // Update UI with current values
+    [self refreshUIFromDefaults];
 
     return self.configSheet;
 }
 
-- (IBAction)chooseFolderClicked:(id)sender {
+#pragma mark - Pane Setup Methods
+
+- (void)setupSourceFoldersPane {
+    // Clear right pane
+    for (NSView *subview in self.rightPaneView.subviews) {
+        [subview removeFromSuperview];
+    }
+
+    // Folders table view (full width, leave 50px at bottom for buttons)
+    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 50, 390, 210)];
+    foldersScrollView.hasVerticalScroller = YES;
+    foldersScrollView.borderType = NSBezelBorder;
+
+    self.foldersTableView = [[NSTableView alloc] initWithFrame:foldersScrollView.bounds];
+    NSTableColumn *folderColumn = [[NSTableColumn alloc] initWithIdentifier:@"folder"];
+    folderColumn.title = @"Video Folders";
+    folderColumn.width = 370;
+    [self.foldersTableView addTableColumn:folderColumn];
+    self.foldersTableView.delegate = self;
+    self.foldersTableView.dataSource = self;
+    foldersScrollView.documentView = self.foldersTableView;
+    [self.rightPaneView addSubview:foldersScrollView];
+
+    // Empty state label (hidden when folders exist)
+    self.emptyStateLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 100, 390, 60)];
+    self.emptyStateLabel.stringValue = @"No video folders configured.\n\nClick + to add a video folder";
+    self.emptyStateLabel.alignment = NSTextAlignmentCenter;
+    self.emptyStateLabel.textColor = [NSColor secondaryLabelColor];
+    self.emptyStateLabel.editable = NO;
+    self.emptyStateLabel.bordered = NO;
+    self.emptyStateLabel.backgroundColor = [NSColor clearColor];
+    self.emptyStateLabel.font = [NSFont systemFontOfSize:13];
+    self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
+    [self.rightPaneView addSubview:self.emptyStateLabel];
+
+    // Add folder button (+)
+    NSButton *addButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 10, 32, 32)];
+    [addButton setTitle:@"+"];
+    [addButton setButtonType:NSButtonTypeMomentaryPushIn];
+    [addButton setBezelStyle:NSBezelStyleRounded];
+    [addButton setTarget:self];
+    [addButton setAction:@selector(addFolderClicked:)];
+    [addButton setFont:[NSFont systemFontOfSize:18]];
+    [self.rightPaneView addSubview:addButton];
+
+    // Remove folder button (-)
+    NSButton *removeButton = [[NSButton alloc] initWithFrame:NSMakeRect(40, 10, 32, 32)];
+    [removeButton setTitle:@"-"];
+    [removeButton setButtonType:NSButtonTypeMomentaryPushIn];
+    [removeButton setBezelStyle:NSBezelStyleRounded];
+    [removeButton setTarget:self];
+    [removeButton setAction:@selector(removeFolderClicked:)];
+    [removeButton setFont:[NSFont systemFontOfSize:18]];
+    [self.rightPaneView addSubview:removeButton];
+}
+
+- (void)setupPlaybackPane {
+    // Clear right pane
+    for (NSView *subview in self.rightPaneView.subviews) {
+        [subview removeFromSuperview];
+    }
+
+    int yPos = 200;
+
+    // Enable Audio checkbox
+    self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
+    self.enableAudioCheckbox.title = @"Enable Audio";
+    self.enableAudioCheckbox.target = self;
+    self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
+    [self.rightPaneView addSubview:self.enableAudioCheckbox];
+
+    yPos -= 40;
+
+    // Shuffle Videos checkbox
+    self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
+    self.shuffleCheckbox.title = @"Shuffle Videos";
+    self.shuffleCheckbox.target = self;
+    self.shuffleCheckbox.action = @selector(settingCheckboxClicked:);
+    [self.rightPaneView addSubview:self.shuffleCheckbox];
+
+    yPos -= 40;
+
+    // Loop Playlist checkbox
+    self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    [self.loopCheckbox setButtonType:NSButtonTypeSwitch];
+    self.loopCheckbox.title = @"Loop Playlist";
+    self.loopCheckbox.target = self;
+    self.loopCheckbox.action = @selector(settingCheckboxClicked:);
+    [self.rightPaneView addSubview:self.loopCheckbox];
+}
+
+- (void)setupDisplayPane {
+    // Clear right pane
+    for (NSView *subview in self.rightPaneView.subviews) {
+        [subview removeFromSuperview];
+    }
+
+    int yPos = 200;
+
+    // Transition label and popup
+    NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
+    transitionLabel.stringValue = @"Transition:";
+    transitionLabel.editable = NO;
+    transitionLabel.bezeled = NO;
+    transitionLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:transitionLabel];
+
+    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
+    [self.transitionPopUpButton addItemsWithTitles:@[@"None", @"Fade", @"Cross Dissolve"]];
+    self.transitionPopUpButton.target = self;
+    self.transitionPopUpButton.action = @selector(transitionChanged:);
+    [self.rightPaneView addSubview:self.transitionPopUpButton];
+
+    yPos -= 40;
+
+    // Duration label and slider
+    NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos + 10, 100, 24)];
+    durationTitleLabel.stringValue = @"Duration:";
+    durationTitleLabel.editable = NO;
+    durationTitleLabel.bezeled = NO;
+    durationTitleLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:durationTitleLabel];
+
+    self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, yPos + 10, 100, 24)];
+    self.durationLabel.editable = NO;
+    self.durationLabel.bezeled = NO;
+    self.durationLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:self.durationLabel];
+
+    self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, yPos - 15, 300, 24)];
+    self.durationSlider.minValue = 0.5;
+    self.durationSlider.maxValue = 5.0;
+    self.durationSlider.target = self;
+    self.durationSlider.action = @selector(sliderValueChanged:);
+    [self.rightPaneView addSubview:self.durationSlider];
+}
+
+- (void)refreshUIFromDefaults {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+
+    // Update checkboxes if they exist
+    if (self.enableAudioCheckbox) {
+        self.enableAudioCheckbox.state = [defaults boolForKey:kEnableAudioKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (self.shuffleCheckbox) {
+        self.shuffleCheckbox.state = [defaults boolForKey:kShuffleKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (self.loopCheckbox) {
+        self.loopCheckbox.state = [defaults boolForKey:kLoopKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+
+    // Update transition controls if they exist
+    if (self.transitionPopUpButton) {
+        [self.transitionPopUpButton selectItemAtIndex:[defaults integerForKey:kTransitionTypeKey]];
+        [self transitionChanged:self.transitionPopUpButton];
+    }
+    if (self.durationSlider) {
+        self.durationSlider.doubleValue = [defaults doubleForKey:kTransitionDurationKey];
+        [self updateDurationLabel];
+    }
+
+    // Reload folder table
+    if (self.foldersTableView) {
+        [self.foldersTableView reloadData];
+        self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
+    }
+}
+
+#pragma mark - Action Handlers
+
+- (IBAction)addFolderClicked:(id)sender {
     NSOpenPanel *panel = [NSOpenPanel openPanel];
-    panel.canChooseFiles = NO; panel.canChooseDirectories = YES; panel.allowsMultipleSelection = NO; panel.prompt = @"Choose";
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = @"Add";
+    panel.directoryURL = [NSURL fileURLWithPath:NSHomeDirectory()];
+
     [panel beginSheetModalForWindow:self.configSheet completionHandler:^(NSModalResponse result) {
         if (result == NSModalResponseOK) {
             NSURL *url = panel.URL;
             if (url) {
                 NSError *error = nil;
-                NSData *bookmarkData = [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope includingResourceValuesForKeys:nil relativeToURL:nil error:&error];
-                if (error) { return; }
-                
-                ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-                [defaults setObject:bookmarkData forKey:kVideoFolderBookmarkKey];
-                [defaults synchronize];
-                [self updateFolderLabel];
-                
-                if (self.isPreview) {
-                    [self stopAnimation];
-                    [self startAnimation];
+                NSData *bookmarkData = [url bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+                                         includingResourceValuesForKeys:nil
+                                                          relativeToURL:nil
+                                                                  error:&error];
+                if (!error && bookmarkData) {
+                    // Check for duplicates
+                    BOOL isDuplicate = NO;
+                    for (NSData *existingBookmark in self.folderBookmarks) {
+                        NSURL *existingURL = [NSURL URLByResolvingBookmarkData:existingBookmark
+                                                                       options:0
+                                                                 relativeToURL:nil
+                                                           bookmarkDataIsStale:NULL
+                                                                         error:NULL];
+                        if ([existingURL.path isEqualToString:url.path]) {
+                            isDuplicate = YES;
+                            break;
+                        }
+                    }
+
+                    if (!isDuplicate) {
+                        [self.folderBookmarks addObject:bookmarkData];
+                        [self saveFolderBookmarks];
+                        [self.foldersTableView reloadData];
+                        self.emptyStateLabel.hidden = YES;
+
+                        // Reload videos if in preview
+                        if (self.isPreview) {
+                            [self stopAnimation];
+                            [self startAnimation];
+                        }
+                    }
                 }
             }
         }
     }];
 }
+
+- (IBAction)removeFolderClicked:(id)sender {
+    NSInteger selectedRow = self.foldersTableView.selectedRow;
+    if (selectedRow < 0 || selectedRow >= self.folderBookmarks.count) return;
+
+    NSData *bookmarkData = self.folderBookmarks[selectedRow];
+    NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData
+                                                 options:0
+                                           relativeToURL:nil
+                                     bookmarkDataIsStale:NULL
+                                                   error:NULL];
+    NSString *folderName = folderURL.lastPathComponent ?: @"this folder";
+
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = @"Remove Folder";
+    alert.informativeText = [NSString stringWithFormat:@"Remove '%@' from source folders?", folderName];
+    [alert addButtonWithTitle:@"Remove"];
+    [alert addButtonWithTitle:@"Cancel"];
+
+    [alert beginSheetModalForWindow:self.configSheet completionHandler:^(NSModalResponse returnCode) {
+        if (returnCode == NSAlertFirstButtonReturn) {
+            [self.folderBookmarks removeObjectAtIndex:selectedRow];
+            [self saveFolderBookmarks];
+            [self.foldersTableView reloadData];
+            self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
+
+            // Reload videos if in preview
+            if (self.isPreview) {
+                [self stopAnimation];
+                [self startAnimation];
+            }
+        }
+    }];
+}
+
+- (void)saveFolderBookmarks {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    [defaults setObject:self.folderBookmarks forKey:kVideoFoldersBookmarksKey];
+    [defaults synchronize];
+}
+
 
 - (IBAction)settingCheckboxClicked:(NSButton *)sender {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
@@ -615,21 +890,69 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     [self updateDurationLabel];
 }
 
-- (void)updateDurationLabel { self.durationLabel.stringValue = [NSString stringWithFormat:@"%.1f s", self.durationSlider.doubleValue]; }
-- (IBAction)closeConfigSheet:(id)sender { [NSApp endSheet:self.configSheet]; }
-- (void)updateFolderLabel {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    NSData *bookmarkData = [defaults objectForKey:kVideoFolderBookmarkKey];
-    if (bookmarkData && [bookmarkData isKindOfClass:[NSData class]]) {
-        NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData options:0 relativeToURL:nil bookmarkDataIsStale:NULL error:NULL];
-        if (folderURL.path) {
-            self.folderLabel.stringValue = [NSString stringWithFormat:@"Folder: %@", [folderURL.path stringByAbbreviatingWithTildeInPath]];
-        } else {
-            self.folderLabel.stringValue = @"Error: Could not read folder path.";
-        }
-    } else {
-        self.folderLabel.stringValue = @"No folder selected.";
+- (void)updateDurationLabel {
+    self.durationLabel.stringValue = [NSString stringWithFormat:@"%.1f s", self.durationSlider.doubleValue];
+}
+
+- (IBAction)closeConfigSheet:(id)sender {
+    [NSApp endSheet:self.configSheet];
+}
+
+#pragma mark - NSTableView DataSource
+
+- (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
+    if (tableView == self.categoryTableView) {
+        return 3; // Source Folders, Playback, Display
+    } else if (tableView == self.foldersTableView) {
+        return self.folderBookmarks.count;
     }
+    return 0;
+}
+
+- (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
+    if (tableView == self.categoryTableView) {
+        NSArray *categories = @[@"Source Folders", @"Playback", @"Display"];
+        return categories[row];
+    } else if (tableView == self.foldersTableView) {
+        NSData *bookmarkData = self.folderBookmarks[row];
+        NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData
+                                                     options:0
+                                               relativeToURL:nil
+                                         bookmarkDataIsStale:NULL
+                                                       error:NULL];
+        return folderURL.lastPathComponent ?: @"Unknown Folder";
+    }
+    return nil;
+}
+
+#pragma mark - NSTableView Delegate
+
+- (void)tableViewSelectionDidChange:(NSNotification *)notification {
+    NSTableView *tableView = notification.object;
+    if (tableView == self.categoryTableView) {
+        NSInteger selectedRow = tableView.selectedRow;
+        if (selectedRow == 0) {
+            [self setupSourceFoldersPane];
+        } else if (selectedRow == 1) {
+            [self setupPlaybackPane];
+        } else if (selectedRow == 2) {
+            [self setupDisplayPane];
+        }
+        [self refreshUIFromDefaults];
+    }
+}
+
+- (NSString *)tableView:(NSTableView *)tableView toolTipForCell:(NSCell *)cell rect:(NSRectPointer)rect tableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row mouseLocation:(NSPoint)mouseLocation {
+    if (tableView == self.foldersTableView && row < self.folderBookmarks.count) {
+        NSData *bookmarkData = self.folderBookmarks[row];
+        NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData
+                                                     options:0
+                                               relativeToURL:nil
+                                         bookmarkDataIsStale:NULL
+                                                       error:NULL];
+        return [folderURL.path stringByAbbreviatingWithTildeInPath];
+    }
+    return nil;
 }
 
 @end
