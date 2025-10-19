@@ -24,12 +24,6 @@ static NSString * const kTransitionTypeKey = @"transitionType";
 static NSString * const kTransitionDurationKey = @"transitionDuration";
 static NSString * const kVideoScalingKey = @"videoScaling";
 static NSString * const kRecursiveScanKey = @"recursiveScan";
-static NSString * const kShowFilenameKey = @"showFilename";
-static NSString * const kFilenamePositionKey = @"filenamePosition";
-static NSString * const kFilenameFontSizeKey = @"filenameFontSize";
-static NSString * const kFilenameFontTypeKey = @"filenameFontType";
-static NSString * const kFilenameOpacityKey = @"filenameOpacity";
-static NSString * const kFilenameGlassEffectKey = @"filenameGlassEffect";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
@@ -46,19 +40,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     VideoScalingStretch     // AVLayerVideoGravityResize - Stretch to fill (distorts aspect)
 };
 
-typedef NS_ENUM(NSInteger, FilenamePosition) {
-    FilenamePositionBottomLeft,
-    FilenamePositionBottomRight,
-    FilenamePositionTopLeft,
-    FilenamePositionTopRight
-};
-
-typedef NS_ENUM(NSInteger, FilenameFontType) {
-    FilenameFontTypeSystem,
-    FilenameFontTypeMonospaced,
-    FilenameFontTypeSerif
-};
-
 @interface Video_Screen_SaverView () <NSTableViewDelegate, NSTableViewDataSource>
 
 // Configuration Sheet Properties
@@ -72,14 +53,6 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
 @property (strong) NSTextField *durationLabel;
 @property (strong) NSPopUpButton *scalingPopUpButton;
 @property (strong) NSButton *recursiveScanCheckbox;
-@property (strong) NSButton *showFilenameCheckbox;
-@property (strong) NSPopUpButton *filenamePositionPopUpButton;
-@property (strong) NSSlider *filenameFontSizeSlider;
-@property (strong) NSTextField *filenameFontSizeLabel;
-@property (strong) NSPopUpButton *filenameFontTypePopUpButton;
-@property (strong) NSSlider *filenameOpacitySlider;
-@property (strong) NSTextField *filenameOpacityLabel;
-@property (strong) NSButton *filenameGlassEffectCheckbox;
 
 // Two-pane UI Properties
 @property (strong) NSTableView *categoryTableView;
@@ -112,10 +85,6 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
 // KVO tracking - use a set to track all observed items
 @property (strong) NSMutableSet<AVPlayerItem *> *observedItems;
 
-// Filename overlay
-@property (strong) CATextLayer *filenameOverlayLayer;
-@property (strong) NSView *filenameOverlayView;
-
 @end
 
 @implementation Video_Screen_SaverView
@@ -140,13 +109,7 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
             kTransitionTypeKey: @(TransitionTypeCrossDissolve),
             kTransitionDurationKey: @1.5,
             kVideoScalingKey: @(VideoScalingFill),
-            kRecursiveScanKey: @NO,
-            kShowFilenameKey: @NO,
-            kFilenamePositionKey: @(FilenamePositionBottomLeft),
-            kFilenameFontSizeKey: @18.0,
-            kFilenameFontTypeKey: @(FilenameFontTypeSystem),
-            kFilenameOpacityKey: @0.9,
-            kFilenameGlassEffectKey: @NO
+            kRecursiveScanKey: @NO
         }];
         
         self.playerA = [[AVPlayer alloc] init];
@@ -426,10 +389,6 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
             [self setupBoundaryTimeObserverForURL:((AVURLAsset *)playerItem.asset).URL];
             [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerItemDidReachEnd:) name:AVPlayerItemDidPlayToEndTimeNotification object:playerItem];
 
-            // Update filename overlay for the new video
-            NSURL *videoURL = ((AVURLAsset *)playerItem.asset).URL;
-            [self updateFilenameOverlayForVideo:videoURL];
-
             // Unlock to allow the next video to be prepared.
             self.isPreparingNextVideo = NO;
             
@@ -693,8 +652,8 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (600x550) - increased height for Display pane controls
-    NSRect frame = NSMakeRect(0, 0, 600, 550);
+    // Create window (600x400) - resized after removing filename options
+    NSRect frame = NSMakeRect(0, 0, 600, 400);
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -702,8 +661,8 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     self.configSheet.title = @"Video Screen Saver Settings";
     NSView *contentView = self.configSheet.contentView;
 
-    // Left pane - Category list (150x460, 20px margins) - increased height
-    NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 460)];
+    // Left pane - Category list (150x310, 20px margins) - resized
+    NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 310)];
     categoryScrollView.hasVerticalScroller = YES;
     categoryScrollView.borderType = NSBezelBorder;
 
@@ -714,11 +673,12 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     self.categoryTableView.headerView = nil;
     self.categoryTableView.delegate = self;
     self.categoryTableView.dataSource = self;
+    self.categoryTableView.intercellSpacing = NSMakeSize(0, 5); // Add 5px vertical padding
     categoryScrollView.documentView = self.categoryTableView;
     [contentView addSubview:categoryScrollView];
 
-    // Right pane container (390x460) - increased height
-    self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 460)];
+    // Right pane container (390x310) - resized
+    self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 310)];
     [contentView addSubview:self.rightPaneView];
 
     // OK button
@@ -748,8 +708,8 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
         [subview removeFromSuperview];
     }
 
-    // Folders table view (full width, leave 50px at bottom for buttons) - use full height
-    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 50, 390, 410)];
+    // Folders table view (full width, leave 50px at bottom for buttons) - use resized height
+    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 50, 390, 260)];
     foldersScrollView.hasVerticalScroller = YES;
     foldersScrollView.borderType = NSBezelBorder;
 
@@ -810,7 +770,7 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
         [subview removeFromSuperview];
     }
 
-    int yPos = 420; // Start near top of 460px pane
+    int yPos = 270; // Start near top of 310px pane
 
     // Enable Audio checkbox
     self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
@@ -847,7 +807,7 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
         [subview removeFromSuperview];
     }
 
-    int yPos = 420; // Start near top of 460px pane
+    int yPos = 270; // Start near top of 310px pane
 
     // Video Scaling label and popup
     NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
@@ -901,104 +861,6 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     self.durationSlider.target = self;
     self.durationSlider.action = @selector(sliderValueChanged:);
     [self.rightPaneView addSubview:self.durationSlider];
-
-    yPos -= 70;
-
-    // Show Filename checkbox
-    self.showFilenameCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
-    [self.showFilenameCheckbox setButtonType:NSButtonTypeSwitch];
-    self.showFilenameCheckbox.title = @"Show Filename";
-    self.showFilenameCheckbox.target = self;
-    self.showFilenameCheckbox.action = @selector(showFilenameCheckboxClicked:);
-    [self.rightPaneView addSubview:self.showFilenameCheckbox];
-
-    yPos -= 30;
-
-    // Filename Position label and popup
-    NSTextField *positionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos, 80, 24)];
-    positionLabel.stringValue = @"Position:";
-    positionLabel.editable = NO;
-    positionLabel.bezeled = NO;
-    positionLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:positionLabel];
-
-    self.filenamePositionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
-    [self.filenamePositionPopUpButton addItemsWithTitles:@[@"Bottom Left", @"Bottom Right", @"Top Left", @"Top Right"]];
-    self.filenamePositionPopUpButton.target = self;
-    self.filenamePositionPopUpButton.action = @selector(filenamePositionChanged:);
-    [self.rightPaneView addSubview:self.filenamePositionPopUpButton];
-
-    yPos -= 30;
-
-    // Font Size label and slider
-    NSTextField *fontSizeTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos + 10, 80, 24)];
-    fontSizeTitleLabel.stringValue = @"Font Size:";
-    fontSizeTitleLabel.editable = NO;
-    fontSizeTitleLabel.bezeled = NO;
-    fontSizeTitleLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:fontSizeTitleLabel];
-
-    self.filenameFontSizeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, yPos + 10, 50, 24)];
-    self.filenameFontSizeLabel.editable = NO;
-    self.filenameFontSizeLabel.bezeled = NO;
-    self.filenameFontSizeLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:self.filenameFontSizeLabel];
-
-    self.filenameFontSizeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(40, yPos - 15, 280, 24)];
-    self.filenameFontSizeSlider.minValue = 12.0;
-    self.filenameFontSizeSlider.maxValue = 48.0;
-    self.filenameFontSizeSlider.target = self;
-    self.filenameFontSizeSlider.action = @selector(filenameFontSizeChanged:);
-    [self.rightPaneView addSubview:self.filenameFontSizeSlider];
-
-    yPos -= 55;
-
-    // Font Type label and popup
-    NSTextField *fontTypeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos, 80, 24)];
-    fontTypeLabel.stringValue = @"Font:";
-    fontTypeLabel.editable = NO;
-    fontTypeLabel.bezeled = NO;
-    fontTypeLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:fontTypeLabel];
-
-    self.filenameFontTypePopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
-    [self.filenameFontTypePopUpButton addItemsWithTitles:@[@"System", @"Monospaced", @"Serif"]];
-    self.filenameFontTypePopUpButton.target = self;
-    self.filenameFontTypePopUpButton.action = @selector(filenameFontTypeChanged:);
-    [self.rightPaneView addSubview:self.filenameFontTypePopUpButton];
-
-    yPos -= 30;
-
-    // Opacity label and slider
-    NSTextField *opacityTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos + 10, 80, 24)];
-    opacityTitleLabel.stringValue = @"Opacity:";
-    opacityTitleLabel.editable = NO;
-    opacityTitleLabel.bezeled = NO;
-    opacityTitleLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:opacityTitleLabel];
-
-    self.filenameOpacityLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, yPos + 10, 50, 24)];
-    self.filenameOpacityLabel.editable = NO;
-    self.filenameOpacityLabel.bezeled = NO;
-    self.filenameOpacityLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:self.filenameOpacityLabel];
-
-    self.filenameOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(40, yPos - 15, 280, 24)];
-    self.filenameOpacitySlider.minValue = 0.1;
-    self.filenameOpacitySlider.maxValue = 1.0;
-    self.filenameOpacitySlider.target = self;
-    self.filenameOpacitySlider.action = @selector(filenameOpacityChanged:);
-    [self.rightPaneView addSubview:self.filenameOpacitySlider];
-
-    yPos -= 55;
-
-    // Glass Effect checkbox
-    self.filenameGlassEffectCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(40, yPos, 200, 24)];
-    [self.filenameGlassEffectCheckbox setButtonType:NSButtonTypeSwitch];
-    self.filenameGlassEffectCheckbox.title = @"Glass Effect";
-    self.filenameGlassEffectCheckbox.target = self;
-    self.filenameGlassEffectCheckbox.action = @selector(filenameGlassEffectCheckboxClicked:);
-    [self.rightPaneView addSubview:self.filenameGlassEffectCheckbox];
 }
 
 - (void)refreshUIFromDefaults {
@@ -1017,9 +879,6 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     if (self.recursiveScanCheckbox) {
         self.recursiveScanCheckbox.state = [defaults boolForKey:kRecursiveScanKey] ? NSControlStateValueOn : NSControlStateValueOff;
     }
-    if (self.showFilenameCheckbox) {
-        self.showFilenameCheckbox.state = [defaults boolForKey:kShowFilenameKey] ? NSControlStateValueOn : NSControlStateValueOff;
-    }
 
     // Update scaling popup if it exists
     if (self.scalingPopUpButton) {
@@ -1034,25 +893,6 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     if (self.durationSlider) {
         self.durationSlider.doubleValue = [defaults doubleForKey:kTransitionDurationKey];
         [self updateDurationLabel];
-    }
-
-    // Update filename overlay controls if they exist
-    if (self.filenamePositionPopUpButton) {
-        [self.filenamePositionPopUpButton selectItemAtIndex:[defaults integerForKey:kFilenamePositionKey]];
-    }
-    if (self.filenameFontSizeSlider) {
-        self.filenameFontSizeSlider.doubleValue = [defaults doubleForKey:kFilenameFontSizeKey];
-        [self updateFilenameFontSizeLabel];
-    }
-    if (self.filenameFontTypePopUpButton) {
-        [self.filenameFontTypePopUpButton selectItemAtIndex:[defaults integerForKey:kFilenameFontTypeKey]];
-    }
-    if (self.filenameOpacitySlider) {
-        self.filenameOpacitySlider.doubleValue = [defaults doubleForKey:kFilenameOpacityKey];
-        [self updateFilenameOpacityLabel];
-    }
-    if (self.filenameGlassEffectCheckbox) {
-        self.filenameGlassEffectCheckbox.state = [defaults boolForKey:kFilenameGlassEffectKey] ? NSControlStateValueOn : NSControlStateValueOff;
     }
 
     // Reload folder table
