@@ -155,3 +155,70 @@ FILES MODIFIED THIS SESSION:
 - Video Screen Saver/Video_Screen_SaverView.m (migration logic fix)
 
 ================================================================================
+
+================================================================================
+Date: 2025-10-19
+Session: Video Screen Saver - Feature 3 (Recursive Folder Scanning) - COMPLETED
+================================================================================
+
+FEATURE 3 IMPLEMENTATION SUMMARY:
+
+Feature: Recursive Folder Scanning (from features.md)
+Branch: feature/recursive-folder-scanning → merged to main
+Status: TESTED AND WORKING ✓
+
+User confirmed: "yes, works"
+
+Implementation Details:
+
+1. UserDefaults Integration
+   - Added kRecursiveScanKey constant
+   - Default value: NO (disabled by default for backwards compatibility)
+   - Lines 24, 108: Key definition and default registration
+
+2. UI Components
+   - Added recursiveScanCheckbox property to interface (Line 53)
+   - Checkbox positioned in Source Folders pane at (200, 10, 190, 24)
+   - Lines 735-741: UI setup in setupSourceFoldersPane
+
+3. Recursive Scanning Logic (Lines 486-564)
+   - Updated getVideoURLsFromFolder to support dual modes:
+     * Recursive mode: Uses NSDirectoryEnumerator for deep scanning
+     * Non-recursive mode: Uses contentsOfDirectoryAtURL (original)
+   - Properly skips directories when recursing (only processes video files)
+   - Error handling with errorHandler block that continues enumeration
+
+4. Settings Persistence
+   - refreshUIFromDefaults: Updates checkbox from UserDefaults (Lines 856-858)
+   - recursiveScanCheckboxClicked: Saves state and reloads playlist (Lines 993-1004)
+   - Live updates: Immediately reloads playlist if screensaver is running
+
+BENEFITS:
+- Users can organize videos in nested folder structures
+- Automatic discovery of videos at any depth
+- Backwards compatible (disabled by default)
+- Live updates when toggling
+
+FILES MODIFIED:
+- Video Screen Saver/Video_Screen_SaverView.m
+
+BUILD & INSTALL:
+- Built: Oct 19 15:00:35 2025
+- Installed: Oct 19 15:02:06 2025
+- Location: ~/Library/Screen Savers/Video Screen Saver.saver
+
+COMPLETED FEATURES (from features.md):
+✓ 1. Multiple Source Folders
+✓ 2. Video Scaling Options
+✓ 3. Recursive Folder Scanning
+
+REMAINING FEATURES:
+4. Show Filename Overlay (NEXT - starting now)
+5. Volume Control
+6. More Transition Options
+
+NEXT STEPS:
+- Implement Feature 4: Show Filename Overlay
+- Branch: feature/filename-overlay (created)
+
+================================================================================
