@@ -136,6 +136,13 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     // Ensure everything is cleaned up
     [self stopAnimation];
 
+    // Clean up configuration sheet if it exists
+    if (self.configSheet) {
+        [self.configSheet orderOut:nil];
+        self.configSheet = nil;
+    }
+    self.folderBookmarks = nil;
+
     // Final cleanup - release player objects
     self.playerA = nil;
     self.playerB = nil;
@@ -553,7 +560,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 
 #pragma mark - Configuration Sheet
-- (BOOL)hasConfigureSheet { return YES; }
+- (BOOL)hasConfigureSheet {
+    return YES;
+}
 
 - (NSWindow*)configureSheet {
     // ⚠️ CRITICAL: DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY ⚠️
@@ -572,7 +581,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
-    NSLog(@"Loaded %lu folders from UserDefaults", (unsigned long)self.folderBookmarks.count);
 
     // Create window (600x350)
     NSRect frame = NSMakeRect(0, 0, 600, 350);
@@ -884,11 +892,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     [alert beginSheetModalForWindow:self.configSheet completionHandler:^(NSModalResponse returnCode) {
         if (returnCode == NSAlertFirstButtonReturn) {
-            NSLog(@"Before removal: %lu folders", (unsigned long)self.folderBookmarks.count);
             [self.folderBookmarks removeObjectAtIndex:selectedRow];
-            NSLog(@"After removal: %lu folders", (unsigned long)self.folderBookmarks.count);
             [self saveFolderBookmarks];
-            NSLog(@"Saved to UserDefaults");
             [self.foldersTableView reloadData];
             self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
 
@@ -904,22 +909,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 - (void)saveFolderBookmarks {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    NSLog(@"Saving %lu folders to key: %@", (unsigned long)self.folderBookmarks.count, kVideoFoldersBookmarksKey);
-
     [defaults setObject:self.folderBookmarks forKey:kVideoFoldersBookmarksKey];
     [defaults synchronize];
-
-    // FORCE write to disk by also using NSUserDefaults with full domain
-    // This works around ScreenSaverDefaults caching issues
-    NSString *domain = [NSString stringWithFormat:@"com.apple.ScreenSaver.%@", @"VideoScreenSaverModule"];
-    [[NSUserDefaults standardUserDefaults] setPersistentDomain:@{kVideoFoldersBookmarksKey: self.folderBookmarks} forName:domain];
-    [[NSUserDefaults standardUserDefaults] synchronize];
-
-    // Verify it was saved
-    NSArray *verify = [defaults objectForKey:kVideoFoldersBookmarksKey];
-    NSLog(@"Verified in ScreenSaverDefaults: %lu folders", (unsigned long)(verify ? verify.count : 0));
-    NSArray *verify2 = [[NSUserDefaults standardUserDefaults] persistentDomainForName:domain][kVideoFoldersBookmarksKey];
-    NSLog(@"Verified in NSUserDefaults: %lu folders", (unsigned long)(verify2 ? verify2.count : 0));
 }
 
 
@@ -962,12 +953,22 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (IBAction)closeConfigSheet:(id)sender {
-    NSLog(@"closeConfigSheet called - clearing folderBookmarks");
     NSWindow *sheet = self.configSheet;
-    self.configSheet = nil;  // Clear reference first
-    self.folderBookmarks = nil;  // Reset so it reloads from UserDefaults next time
-    [NSApp endSheet:sheet];
+
+    // macOS 26 (Sequoia) compatibility: properly dismiss the sheet
+    if (sheet.sheetParent) {
+        // If presented as a sheet, end it properly
+        [sheet.sheetParent endSheet:sheet];
+    } else {
+        // Fallback for older macOS versions or if not presented as sheet
+        [NSApp endSheet:sheet];
+    }
+
     [sheet orderOut:self];  // Explicitly order out the window
+
+    // Clear references AFTER dismissing
+    self.configSheet = nil;
+    self.folderBookmarks = nil;  // Reset so it reloads from UserDefaults next time
 }
 
 #pragma mark - Helper Methods
