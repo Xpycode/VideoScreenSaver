@@ -10,6 +10,8 @@
 #import <ScreenSaver/ScreenSaver.h>
 #import <AVFoundation/AVFoundation.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#import <QuartzCore/QuartzCore.h>
+#import <CoreImage/CoreImage.h>
 #import <os/log.h>
 
 // UserDefaults Keys
@@ -25,6 +27,9 @@ static NSString * const kRecursiveScanKey = @"recursiveScan";
 static NSString * const kShowFilenameKey = @"showFilename";
 static NSString * const kFilenamePositionKey = @"filenamePosition";
 static NSString * const kFilenameFontSizeKey = @"filenameFontSize";
+static NSString * const kFilenameFontTypeKey = @"filenameFontType";
+static NSString * const kFilenameOpacityKey = @"filenameOpacity";
+static NSString * const kFilenameGlassEffectKey = @"filenameGlassEffect";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
@@ -48,6 +53,12 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     FilenamePositionTopRight
 };
 
+typedef NS_ENUM(NSInteger, FilenameFontType) {
+    FilenameFontTypeSystem,
+    FilenameFontTypeMonospaced,
+    FilenameFontTypeSerif
+};
+
 @interface Video_Screen_SaverView () <NSTableViewDelegate, NSTableViewDataSource>
 
 // Configuration Sheet Properties
@@ -65,6 +76,10 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
 @property (strong) NSPopUpButton *filenamePositionPopUpButton;
 @property (strong) NSSlider *filenameFontSizeSlider;
 @property (strong) NSTextField *filenameFontSizeLabel;
+@property (strong) NSPopUpButton *filenameFontTypePopUpButton;
+@property (strong) NSSlider *filenameOpacitySlider;
+@property (strong) NSTextField *filenameOpacityLabel;
+@property (strong) NSButton *filenameGlassEffectCheckbox;
 
 // Two-pane UI Properties
 @property (strong) NSTableView *categoryTableView;
@@ -97,6 +112,7 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
 
 // Filename overlay
 @property (strong) CATextLayer *filenameOverlayLayer;
+@property (strong) NSView *filenameOverlayView;
 
 @end
 
@@ -125,7 +141,10 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
             kRecursiveScanKey: @NO,
             kShowFilenameKey: @NO,
             kFilenamePositionKey: @(FilenamePositionBottomLeft),
-            kFilenameFontSizeKey: @18.0
+            kFilenameFontSizeKey: @18.0,
+            kFilenameFontTypeKey: @(FilenameFontTypeSystem),
+            kFilenameOpacityKey: @0.9,
+            kFilenameGlassEffectKey: @NO
         }];
         
         self.playerA = [[AVPlayer alloc] init];
@@ -654,8 +673,8 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (600x350)
-    NSRect frame = NSMakeRect(0, 0, 600, 350);
+    // Create window (600x550) - increased height for Display pane controls
+    NSRect frame = NSMakeRect(0, 0, 600, 550);
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -663,8 +682,8 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     self.configSheet.title = @"Video Screen Saver Settings";
     NSView *contentView = self.configSheet.contentView;
 
-    // Left pane - Category list (150x260, 20px margins)
-    NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 260)];
+    // Left pane - Category list (150x460, 20px margins) - increased height
+    NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 460)];
     categoryScrollView.hasVerticalScroller = YES;
     categoryScrollView.borderType = NSBezelBorder;
 
@@ -678,8 +697,8 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     categoryScrollView.documentView = self.categoryTableView;
     [contentView addSubview:categoryScrollView];
 
-    // Right pane container (390x260)
-    self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 260)];
+    // Right pane container (390x460) - increased height
+    self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 460)];
     [contentView addSubview:self.rightPaneView];
 
     // OK button
@@ -709,8 +728,8 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
         [subview removeFromSuperview];
     }
 
-    // Folders table view (full width, leave 50px at bottom for buttons)
-    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 50, 390, 210)];
+    // Folders table view (full width, leave 50px at bottom for buttons) - use full height
+    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 50, 390, 410)];
     foldersScrollView.hasVerticalScroller = YES;
     foldersScrollView.borderType = NSBezelBorder;
 
@@ -771,7 +790,7 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
         [subview removeFromSuperview];
     }
 
-    int yPos = 200;
+    int yPos = 420; // Start near top of 460px pane
 
     // Enable Audio checkbox
     self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
@@ -808,7 +827,7 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
         [subview removeFromSuperview];
     }
 
-    int yPos = 200;
+    int yPos = 420; // Start near top of 460px pane
 
     // Video Scaling label and popup
     NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
@@ -911,6 +930,55 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     self.filenameFontSizeSlider.target = self;
     self.filenameFontSizeSlider.action = @selector(filenameFontSizeChanged:);
     [self.rightPaneView addSubview:self.filenameFontSizeSlider];
+
+    yPos -= 55;
+
+    // Font Type label and popup
+    NSTextField *fontTypeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos, 80, 24)];
+    fontTypeLabel.stringValue = @"Font:";
+    fontTypeLabel.editable = NO;
+    fontTypeLabel.bezeled = NO;
+    fontTypeLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:fontTypeLabel];
+
+    self.filenameFontTypePopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
+    [self.filenameFontTypePopUpButton addItemsWithTitles:@[@"System", @"Monospaced", @"Serif"]];
+    self.filenameFontTypePopUpButton.target = self;
+    self.filenameFontTypePopUpButton.action = @selector(filenameFontTypeChanged:);
+    [self.rightPaneView addSubview:self.filenameFontTypePopUpButton];
+
+    yPos -= 30;
+
+    // Opacity label and slider
+    NSTextField *opacityTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos + 10, 80, 24)];
+    opacityTitleLabel.stringValue = @"Opacity:";
+    opacityTitleLabel.editable = NO;
+    opacityTitleLabel.bezeled = NO;
+    opacityTitleLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:opacityTitleLabel];
+
+    self.filenameOpacityLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, yPos + 10, 50, 24)];
+    self.filenameOpacityLabel.editable = NO;
+    self.filenameOpacityLabel.bezeled = NO;
+    self.filenameOpacityLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:self.filenameOpacityLabel];
+
+    self.filenameOpacitySlider = [[NSSlider alloc] initWithFrame:NSMakeRect(40, yPos - 15, 280, 24)];
+    self.filenameOpacitySlider.minValue = 0.1;
+    self.filenameOpacitySlider.maxValue = 1.0;
+    self.filenameOpacitySlider.target = self;
+    self.filenameOpacitySlider.action = @selector(filenameOpacityChanged:);
+    [self.rightPaneView addSubview:self.filenameOpacitySlider];
+
+    yPos -= 55;
+
+    // Glass Effect checkbox
+    self.filenameGlassEffectCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(40, yPos, 200, 24)];
+    [self.filenameGlassEffectCheckbox setButtonType:NSButtonTypeSwitch];
+    self.filenameGlassEffectCheckbox.title = @"Glass Effect";
+    self.filenameGlassEffectCheckbox.target = self;
+    self.filenameGlassEffectCheckbox.action = @selector(filenameGlassEffectCheckboxClicked:);
+    [self.rightPaneView addSubview:self.filenameGlassEffectCheckbox];
 }
 
 - (void)refreshUIFromDefaults {
@@ -955,6 +1023,16 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     if (self.filenameFontSizeSlider) {
         self.filenameFontSizeSlider.doubleValue = [defaults doubleForKey:kFilenameFontSizeKey];
         [self updateFilenameFontSizeLabel];
+    }
+    if (self.filenameFontTypePopUpButton) {
+        [self.filenameFontTypePopUpButton selectItemAtIndex:[defaults integerForKey:kFilenameFontTypeKey]];
+    }
+    if (self.filenameOpacitySlider) {
+        self.filenameOpacitySlider.doubleValue = [defaults doubleForKey:kFilenameOpacityKey];
+        [self updateFilenameOpacityLabel];
+    }
+    if (self.filenameGlassEffectCheckbox) {
+        self.filenameGlassEffectCheckbox.state = [defaults boolForKey:kFilenameGlassEffectKey] ? NSControlStateValueOn : NSControlStateValueOff;
     }
 
     // Reload folder table
@@ -1142,6 +1220,39 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     [self updateFilenameOverlay];
 }
 
+- (IBAction)filenameFontTypeChanged:(NSPopUpButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    [defaults setInteger:sender.indexOfSelectedItem forKey:kFilenameFontTypeKey];
+    [defaults synchronize];
+
+    // Update the overlay immediately
+    [self updateFilenameOverlay];
+}
+
+- (IBAction)filenameOpacityChanged:(NSSlider *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    [defaults setDouble:sender.doubleValue forKey:kFilenameOpacityKey];
+    [defaults synchronize];
+    [self updateFilenameOpacityLabel];
+
+    // Update the overlay immediately
+    [self updateFilenameOverlay];
+}
+
+- (void)updateFilenameOpacityLabel {
+    self.filenameOpacityLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", self.filenameOpacitySlider.doubleValue * 100];
+}
+
+- (IBAction)filenameGlassEffectCheckboxClicked:(NSButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL isEnabled = (sender.state == NSControlStateValueOn);
+    [defaults setBool:isEnabled forKey:kFilenameGlassEffectKey];
+    [defaults synchronize];
+
+    // Update the overlay immediately
+    [self updateFilenameOverlay];
+}
+
 - (IBAction)closeConfigSheet:(id)sender {
     NSWindow *sheet = self.configSheet;
 
@@ -1175,10 +1286,14 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     BOOL showFilename = [defaults boolForKey:kShowFilenameKey];
 
-    // Remove existing overlay if present
+    // Remove existing overlays if present
     if (self.filenameOverlayLayer) {
         [self.filenameOverlayLayer removeFromSuperlayer];
         self.filenameOverlayLayer = nil;
+    }
+    if (self.filenameOverlayView) {
+        [self.filenameOverlayView removeFromSuperview];
+        self.filenameOverlayView = nil;
     }
 
     // Don't create overlay if disabled
@@ -1186,15 +1301,35 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
         return;
     }
 
+    // Get settings
+    CGFloat fontSize = [defaults doubleForKey:kFilenameFontSizeKey];
+    FilenameFontType fontType = (FilenameFontType)[defaults integerForKey:kFilenameFontTypeKey];
+    CGFloat opacity = [defaults doubleForKey:kFilenameOpacityKey];
+    BOOL glassEffect = [defaults boolForKey:kFilenameGlassEffectKey];
+    NSString *filename = videoURL.lastPathComponent.stringByDeletingPathExtension;
+
+    // Select font based on type
+    NSFont *font;
+    switch (fontType) {
+        case FilenameFontTypeMonospaced:
+            font = [NSFont monospacedSystemFontOfSize:fontSize weight:NSFontWeightRegular];
+            break;
+        case FilenameFontTypeSerif:
+            font = [NSFont fontWithName:@"Times New Roman" size:fontSize] ?: [NSFont systemFontOfSize:fontSize];
+            break;
+        case FilenameFontTypeSystem:
+        default:
+            font = [NSFont systemFontOfSize:fontSize];
+            break;
+    }
+
     // Create text layer for filename
     self.filenameOverlayLayer = [CATextLayer layer];
-    self.filenameOverlayLayer.string = videoURL.lastPathComponent.stringByDeletingPathExtension;
-
-    // Configure appearance
-    CGFloat fontSize = [defaults doubleForKey:kFilenameFontSizeKey];
+    self.filenameOverlayLayer.string = filename;
     self.filenameOverlayLayer.fontSize = fontSize;
-    self.filenameOverlayLayer.font = (__bridge CFTypeRef)[NSFont systemFontOfSize:fontSize];
+    self.filenameOverlayLayer.font = (__bridge CFTypeRef)font;
     self.filenameOverlayLayer.foregroundColor = [[NSColor whiteColor] CGColor];
+    self.filenameOverlayLayer.opacity = opacity;
 
     // Add shadow for better visibility
     self.filenameOverlayLayer.shadowColor = [[NSColor blackColor] CGColor];
@@ -1203,8 +1338,7 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     self.filenameOverlayLayer.shadowRadius = 4.0;
 
     // Calculate size
-    NSString *filename = videoURL.lastPathComponent.stringByDeletingPathExtension;
-    NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:fontSize]};
+    NSDictionary *attributes = @{NSFontAttributeName: font};
     CGSize textSize = [filename sizeWithAttributes:attributes];
     CGFloat padding = 20.0;
     CGFloat width = textSize.width + (padding * 2);
@@ -1237,8 +1371,61 @@ typedef NS_ENUM(NSInteger, FilenamePosition) {
     self.filenameOverlayLayer.frame = CGRectMake(xPos, yPos, width, height);
     self.filenameOverlayLayer.contentsScale = [[NSScreen mainScreen] backingScaleFactor];
 
-    // Add to layer hierarchy on top of everything
-    [self.layer addSublayer:self.filenameOverlayLayer];
+    // Apply glass effect if enabled (use NSVisualEffectView like macOS time/date)
+    if (glassEffect) {
+        // Create NSVisualEffectView directly for frosted glass appearance
+        NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:CGRectMake(xPos, yPos, width, height)];
+
+        // Use ContentBackground material for a lighter, more translucent frosted glass effect
+        // This material blurs the content BEHIND it within the same window
+        effectView.material = NSVisualEffectMaterialContentBackground;
+        effectView.state = NSVisualEffectStateActive;
+
+        // CRITICAL: Use WithinWindow blending mode to blur the video content behind it
+        // BehindWindow only works for desktop wallpaper, not content in the same window
+        effectView.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+
+        effectView.wantsLayer = YES;
+        effectView.layer.cornerRadius = 12.0;
+        effectView.layer.masksToBounds = YES;
+
+        // Add subtle tint for better contrast
+        effectView.layer.backgroundColor = [[NSColor blackColor] colorWithAlphaComponent:0.15].CGColor;
+
+        // Create text field for the filename - use full width with proper sizing
+        // Calculate proper text field height to avoid truncation
+        CGFloat textFieldHeight = textSize.height + 4; // Add small vertical padding
+        CGFloat textFieldY = (height - textFieldHeight) / 2.0; // Center vertically
+
+        NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(padding, textFieldY, width - padding * 2, textFieldHeight)];
+        label.stringValue = filename;
+        label.font = font;
+        label.textColor = [NSColor whiteColor];
+        label.alignment = NSTextAlignmentCenter;
+        label.editable = NO;
+        label.bordered = NO;
+        label.drawsBackground = NO;
+        label.alphaValue = opacity;
+
+        // Ensure text doesn't get clipped
+        label.lineBreakMode = NSLineBreakByClipping;
+        label.cell.wraps = NO;
+
+        [effectView addSubview:label];
+
+        // Add shadow to the effect view for depth
+        effectView.shadow = [[NSShadow alloc] init];
+        effectView.shadow.shadowColor = [[NSColor blackColor] colorWithAlphaComponent:0.5];
+        effectView.shadow.shadowOffset = NSMakeSize(0, -2);
+        effectView.shadow.shadowBlurRadius = 8.0;
+
+        self.filenameOverlayView = effectView;
+        [self addSubview:self.filenameOverlayView];
+    } else {
+        // Standard CATextLayer without glass effect
+        // Add to layer hierarchy on top of everything
+        [self.layer addSublayer:self.filenameOverlayLayer];
+    }
 }
 
 #pragma mark - Helper Methods

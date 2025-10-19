@@ -222,3 +222,43 @@ NEXT STEPS:
 - Branch: feature/filename-overlay (created)
 
 ================================================================================
+
+================================================================================
+Date: 2025-10-19 (continued)
+Session: Video Screen Saver - Feature 4 Enhancements (Glass Effect) - FAILED
+================================================================================
+
+GLASS EFFECT IMPLEMENTATION - DID NOT WORK:
+
+Branch: feature/filename-overlay-enhancements
+Location: Video_Screen_SaverView.m:1374-1429
+
+ATTEMPTED FIXES:
+1. Changed NSVisualEffectBlendingModeBehindWindow → NSVisualEffectBlendingModeWithinWindow
+2. Changed NSVisualEffectMaterialHUDWindow → NSVisualEffectMaterialContentBackground
+3. Fixed text truncation with proper text field height calculation
+4. Added subtle black tint (15% opacity) for contrast
+
+RESULT: Glass effect still not working - no frosted/blurred background visible
+
+ISSUES ENCOUNTERED:
+- Initial build created arm64-only binary causing "arch mismatch" error
+- Rebuilt with ONLY_ACTIVE_ARCH=NO to create universal binary (arm64 + x86_64)
+- Video now shows up but glass effect remains non-functional
+
+STATUS: Glass effect feature abandoned for now - not working as expected
+
+FILES MODIFIED:
+- Video Screen Saver/Video_Screen_SaverView.m (lines 1374-1429)
+- Added imports: QuartzCore/QuartzCore.h, CoreImage/CoreImage.h
+- Added UserDefaults keys: kFilenameFontTypeKey, kFilenameOpacityKey, kFilenameGlassEffectKey
+- Added FilenameFontType enum
+- Added UI properties: filenameFontTypePopUpButton, filenameOpacitySlider, etc.
+- Increased config sheet window height: 350 → 550
+
+NEXT STEPS:
+- Commit current changes as-is
+- Glass effect may need different approach or may not be feasible with AVPlayerLayer
+- Continue with other features
+
+================================================================================
