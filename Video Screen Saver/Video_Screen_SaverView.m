@@ -20,6 +20,8 @@ static NSString * const kShuffleKey = @"shuffle";
 static NSString * const kLoopKey = @"loop";
 static NSString * const kTransitionTypeKey = @"transitionType";
 static NSString * const kTransitionDurationKey = @"transitionDuration";
+static NSString * const kVideoScalingKey = @"videoScaling";
+static NSString * const kRecursiveScanKey = @"recursiveScan";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
@@ -28,6 +30,12 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     TransitionTypeNone,
     TransitionTypeFade,
     TransitionTypeCrossDissolve
+};
+
+typedef NS_ENUM(NSInteger, VideoScaling) {
+    VideoScalingFill,       // AVLayerVideoGravityResizeAspectFill - Fill screen, crop if needed
+    VideoScalingFit,        // AVLayerVideoGravityResizeAspect - Fit with letterboxing
+    VideoScalingStretch     // AVLayerVideoGravityResize - Stretch to fill (distorts aspect)
 };
 
 @interface Video_Screen_SaverView () <NSTableViewDelegate, NSTableViewDataSource>
@@ -41,6 +49,8 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 @property (strong) NSPopUpButton *transitionPopUpButton;
 @property (strong) NSSlider *durationSlider;
 @property (strong) NSTextField *durationLabel;
+@property (strong) NSPopUpButton *scalingPopUpButton;
+@property (strong) NSButton *recursiveScanCheckbox;
 
 // Two-pane UI Properties
 @property (strong) NSTableView *categoryTableView;
@@ -93,7 +103,9 @@ typedef NS_ENUM(NSInteger, TransitionType) {
             kShuffleKey: @NO,
             kLoopKey: @YES,
             kTransitionTypeKey: @(TransitionTypeCrossDissolve),
-            kTransitionDurationKey: @1.5
+            kTransitionDurationKey: @1.5,
+            kVideoScalingKey: @(VideoScalingFill),
+            kRecursiveScanKey: @NO
         }];
         
         self.playerA = [[AVPlayer alloc] init];
@@ -107,8 +119,12 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 
         self.playerLayerA = [AVPlayerLayer playerLayerWithPlayer:self.playerA];
         self.playerLayerB = [AVPlayerLayer playerLayerWithPlayer:self.playerB];
-        self.playerLayerA.videoGravity = AVLayerVideoGravityResizeAspectFill;
-        self.playerLayerB.videoGravity = AVLayerVideoGravityResizeAspectFill;
+
+        // Apply saved video scaling preference
+        NSString *videoGravity = [self videoGravityFromScaling:(VideoScaling)[defaults integerForKey:kVideoScalingKey]];
+        self.playerLayerA.videoGravity = videoGravity;
+        self.playerLayerB.videoGravity = videoGravity;
+
         self.playerLayerA.frame = self.bounds;
         self.playerLayerB.frame = self.bounds;
 
@@ -122,6 +138,13 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 - (void)dealloc {
     // Ensure everything is cleaned up
     [self stopAnimation];
+
+    // Clean up configuration sheet if it exists
+    if (self.configSheet) {
+        [self.configSheet orderOut:nil];
+        self.configSheet = nil;
+    }
+    self.folderBookmarks = nil;
 
     // Final cleanup - release player objects
     self.playerA = nil;
@@ -208,26 +231,30 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     NSArray *bookmarksArray = [defaults objectForKey:kVideoFoldersBookmarksKey];
     NSMutableArray<NSURL *> *allVideoURLs = [NSMutableArray array];
 
-    if (bookmarksArray && [bookmarksArray isKindOfClass:[NSArray class]] && bookmarksArray.count > 0) {
-        // Multiple folders mode
-        for (id bookmarkObject in bookmarksArray) {
-            if (![bookmarkObject isKindOfClass:[NSData class]]) continue;
+    if (bookmarksArray != nil) {
+        // New format exists (even if empty array) - use it
+        if ([bookmarksArray isKindOfClass:[NSArray class]] && bookmarksArray.count > 0) {
+            // Multiple folders mode
+            for (id bookmarkObject in bookmarksArray) {
+                if (![bookmarkObject isKindOfClass:[NSData class]]) continue;
 
-            NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
-                                                         options:NSURLBookmarkResolutionWithSecurityScope
-                                                   relativeToURL:nil
-                                             bookmarkDataIsStale:NULL
-                                                           error:NULL];
-            if (!folderURL) continue;
+                NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
+                                                             options:NSURLBookmarkResolutionWithSecurityScope
+                                                       relativeToURL:nil
+                                                 bookmarkDataIsStale:NULL
+                                                               error:NULL];
+                if (!folderURL) continue;
 
-            if ([folderURL startAccessingSecurityScopedResource]) {
-                NSArray<NSURL *> *folderVideos = [self getVideoURLsFromFolder:folderURL];
-                [allVideoURLs addObjectsFromArray:folderVideos];
-                [folderURL stopAccessingSecurityScopedResource];
+                if ([folderURL startAccessingSecurityScopedResource]) {
+                    NSArray<NSURL *> *folderVideos = [self getVideoURLsFromFolder:folderURL];
+                    [allVideoURLs addObjectsFromArray:folderVideos];
+                    [folderURL stopAccessingSecurityScopedResource];
+                }
             }
         }
+        // else: empty array means user removed all folders - don't migrate!
     } else {
-        // Migration: check for legacy single folder bookmark
+        // New format doesn't exist at all - try migration from legacy single folder
         id bookmarkObject = [defaults objectForKey:kVideoFolderBookmarkKey];
         if (bookmarkObject && [bookmarkObject isKindOfClass:[NSData class]]) {
             NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
@@ -457,37 +484,82 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 #pragma mark - Helper Methods
 
 - (NSArray<NSURL *> *)getVideoURLsFromFolder:(NSURL *)folderURL {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSError *dirError = nil;
-    NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:folderURL
-                              includingPropertiesForKeys:@[NSURLContentTypeKey]
-                                                 options:NSDirectoryEnumerationSkipsHiddenFiles
-                                                   error:&dirError];
-    if (dirError) {
-        os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading directory: %@", dirError);
-        return @[];
-    }
-    
-    NSMutableArray<NSURL *> *videoURLs = [NSMutableArray array];
-    for (NSURL *fileURL in files) {
-        id contentType = nil;
-        NSError *utiError = nil;
-        [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL recursiveScan = [defaults boolForKey:kRecursiveScanKey];
 
-        if (contentType && !utiError) {
-            UTType *type = nil;
-            // macOS 26 returns UTType directly, older versions return NSString
-            if ([contentType isKindOfClass:[UTType class]]) {
-                type = (UTType *)contentType;
-            } else if ([contentType isKindOfClass:[NSString class]]) {
-                type = [UTType typeWithIdentifier:(NSString *)contentType];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray<NSURL *> *videoURLs = [NSMutableArray array];
+
+    if (recursiveScan) {
+        // Recursive enumeration - scans all subdirectories
+        NSDirectoryEnumerator<NSURL *> *enumerator = [fm enumeratorAtURL:folderURL
+                                              includingPropertiesForKeys:@[NSURLContentTypeKey, NSURLIsDirectoryKey]
+                                                                 options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                            errorHandler:^BOOL(NSURL *url, NSError *error) {
+            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading %@: %@", url, error);
+            return YES; // Continue enumeration
+        }];
+
+        for (NSURL *fileURL in enumerator) {
+            NSNumber *isDirectory = nil;
+            [fileURL getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
+
+            // Skip directories, we only want files
+            if ([isDirectory boolValue]) {
+                continue;
             }
 
-            if (type && [type conformsToType:UTTypeMovie]) {
-                [videoURLs addObject:fileURL];
+            id contentType = nil;
+            NSError *utiError = nil;
+            [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
+
+            if (contentType && !utiError) {
+                UTType *type = nil;
+                // macOS 26 returns UTType directly, older versions return NSString
+                if ([contentType isKindOfClass:[UTType class]]) {
+                    type = (UTType *)contentType;
+                } else if ([contentType isKindOfClass:[NSString class]]) {
+                    type = [UTType typeWithIdentifier:(NSString *)contentType];
+                }
+
+                if (type && [type conformsToType:UTTypeMovie]) {
+                    [videoURLs addObject:fileURL];
+                }
+            }
+        }
+    } else {
+        // Non-recursive - only scan top level
+        NSError *dirError = nil;
+        NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:folderURL
+                                  includingPropertiesForKeys:@[NSURLContentTypeKey]
+                                                     options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                       error:&dirError];
+        if (dirError) {
+            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading directory: %@", dirError);
+            return @[];
+        }
+
+        for (NSURL *fileURL in files) {
+            id contentType = nil;
+            NSError *utiError = nil;
+            [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
+
+            if (contentType && !utiError) {
+                UTType *type = nil;
+                // macOS 26 returns UTType directly, older versions return NSString
+                if ([contentType isKindOfClass:[UTType class]]) {
+                    type = (UTType *)contentType;
+                } else if ([contentType isKindOfClass:[NSString class]]) {
+                    type = [UTType typeWithIdentifier:(NSString *)contentType];
+                }
+
+                if (type && [type conformsToType:UTTypeMovie]) {
+                    [videoURLs addObject:fileURL];
+                }
             }
         }
     }
+
     return [videoURLs copy];
 }
 
@@ -536,56 +608,68 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 
 
 #pragma mark - Configuration Sheet
-- (BOOL)hasConfigureSheet { return YES; }
+- (BOOL)hasConfigureSheet {
+    return YES;
+}
 
 - (NSWindow*)configureSheet {
-    if (!self.configSheet) {
-        // Load saved bookmarks
-        ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-        NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
-        self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
+    // ⚠️ CRITICAL: DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY ⚠️
+    // This method MUST create a fresh window every time to avoid intermittent modal sheet failures.
+    // Reusing the window causes the sheet to stop appearing after working for a while.
+    // The pattern of checking for existing window, ordering it out, and nilifying is intentional.
 
-        // Create window (600x350)
-        NSRect frame = NSMakeRect(0, 0, 600, 350);
-        self.configSheet = [[NSWindow alloc] initWithContentRect:frame
-                                                       styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
-                                                         backing:NSBackingStoreBuffered
-                                                           defer:NO];
-        self.configSheet.title = @"Video Screen Saver Settings";
-        NSView *contentView = self.configSheet.contentView;
-
-        // Left pane - Category list (150x260, 20px margins)
-        NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 260)];
-        categoryScrollView.hasVerticalScroller = YES;
-        categoryScrollView.borderType = NSBezelBorder;
-
-        self.categoryTableView = [[NSTableView alloc] initWithFrame:categoryScrollView.bounds];
-        NSTableColumn *categoryColumn = [[NSTableColumn alloc] initWithIdentifier:@"category"];
-        categoryColumn.width = 148;
-        [self.categoryTableView addTableColumn:categoryColumn];
-        self.categoryTableView.headerView = nil;
-        self.categoryTableView.delegate = self;
-        self.categoryTableView.dataSource = self;
-        categoryScrollView.documentView = self.categoryTableView;
-        [contentView addSubview:categoryScrollView];
-
-        // Right pane container (390x260)
-        self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 260)];
-        [contentView addSubview:self.rightPaneView];
-
-        // OK button
-        NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, 20, 80, 32)];
-        okButton.title = @"OK";
-        okButton.bezelStyle = NSBezelStyleRounded;
-        okButton.keyEquivalent = @"\r";
-        okButton.target = self;
-        okButton.action = @selector(closeConfigSheet:);
-        [contentView addSubview:okButton];
-
-        // Select Source Folders by default
-        [self.categoryTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-        [self setupSourceFoldersPane];
+    // Always create fresh - don't reuse old window
+    if (self.configSheet) {
+        [self.configSheet orderOut:nil];
+        self.configSheet = nil;
     }
+
+    // ALWAYS reload from UserDefaults to ensure we have the latest data
+    // System Settings creates multiple instances of ScreenSaverView, so we can't rely on cached data
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
+    self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
+
+    // Create window (600x350)
+    NSRect frame = NSMakeRect(0, 0, 600, 350);
+    self.configSheet = [[NSWindow alloc] initWithContentRect:frame
+                                                   styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
+                                                     backing:NSBackingStoreBuffered
+                                                       defer:NO];
+    self.configSheet.title = @"Video Screen Saver Settings";
+    NSView *contentView = self.configSheet.contentView;
+
+    // Left pane - Category list (150x260, 20px margins)
+    NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 260)];
+    categoryScrollView.hasVerticalScroller = YES;
+    categoryScrollView.borderType = NSBezelBorder;
+
+    self.categoryTableView = [[NSTableView alloc] initWithFrame:categoryScrollView.bounds];
+    NSTableColumn *categoryColumn = [[NSTableColumn alloc] initWithIdentifier:@"category"];
+    categoryColumn.width = 148;
+    [self.categoryTableView addTableColumn:categoryColumn];
+    self.categoryTableView.headerView = nil;
+    self.categoryTableView.delegate = self;
+    self.categoryTableView.dataSource = self;
+    categoryScrollView.documentView = self.categoryTableView;
+    [contentView addSubview:categoryScrollView];
+
+    // Right pane container (390x260)
+    self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 260)];
+    [contentView addSubview:self.rightPaneView];
+
+    // OK button
+    NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, 20, 80, 32)];
+    okButton.title = @"OK";
+    okButton.bezelStyle = NSBezelStyleRounded;
+    okButton.keyEquivalent = @"\r";
+    okButton.target = self;
+    okButton.action = @selector(closeConfigSheet:);
+    [contentView addSubview:okButton];
+
+    // Select Source Folders by default
+    [self.categoryTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
+    [self setupSourceFoldersPane];
 
     // Update UI with current values
     [self refreshUIFromDefaults];
@@ -647,6 +731,14 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     [removeButton setAction:@selector(removeFolderClicked:)];
     [removeButton setFont:[NSFont systemFontOfSize:18]];
     [self.rightPaneView addSubview:removeButton];
+
+    // Search Subfolders checkbox (positioned on the right side)
+    self.recursiveScanCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(200, 10, 190, 24)];
+    [self.recursiveScanCheckbox setButtonType:NSButtonTypeSwitch];
+    self.recursiveScanCheckbox.title = @"Search Subfolders";
+    self.recursiveScanCheckbox.target = self;
+    self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
+    [self.rightPaneView addSubview:self.recursiveScanCheckbox];
 }
 
 - (void)setupPlaybackPane {
@@ -693,6 +785,22 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     }
 
     int yPos = 200;
+
+    // Video Scaling label and popup
+    NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
+    scalingLabel.stringValue = @"Video Scaling:";
+    scalingLabel.editable = NO;
+    scalingLabel.bezeled = NO;
+    scalingLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:scalingLabel];
+
+    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
+    [self.scalingPopUpButton addItemsWithTitles:@[@"Fill Screen", @"Fit to Screen", @"Stretch"]];
+    self.scalingPopUpButton.target = self;
+    self.scalingPopUpButton.action = @selector(scalingChanged:);
+    [self.rightPaneView addSubview:self.scalingPopUpButton];
+
+    yPos -= 40;
 
     // Transition label and popup
     NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
@@ -744,6 +852,14 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     }
     if (self.loopCheckbox) {
         self.loopCheckbox.state = [defaults boolForKey:kLoopKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (self.recursiveScanCheckbox) {
+        self.recursiveScanCheckbox.state = [defaults boolForKey:kRecursiveScanKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+
+    // Update scaling popup if it exists
+    if (self.scalingPopUpButton) {
+        [self.scalingPopUpButton selectItemAtIndex:[defaults integerForKey:kVideoScalingKey]];
     }
 
     // Update transition controls if they exist
@@ -840,8 +956,9 @@ typedef NS_ENUM(NSInteger, TransitionType) {
             [self.foldersTableView reloadData];
             self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
 
-            // Reload videos if in preview
-            if (self.isPreview) {
+            // If screensaver is currently running, reload the playlist immediately
+            // Otherwise, it will pick up the new folder list on next start
+            if (self.videoURLs && self.videoURLs.count > 0) {
                 [self stopAnimation];
                 [self startAnimation];
             }
@@ -873,12 +990,25 @@ typedef NS_ENUM(NSInteger, TransitionType) {
     }
 }
 
+- (IBAction)recursiveScanCheckboxClicked:(NSButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL isEnabled = (sender.state == NSControlStateValueOn);
+    [defaults setBool:isEnabled forKey:kRecursiveScanKey];
+    [defaults synchronize];
+
+    // Reload playlist if screensaver is running to apply the change immediately
+    if (self.videoURLs && self.videoURLs.count > 0) {
+        [self stopAnimation];
+        [self startAnimation];
+    }
+}
+
 - (IBAction)transitionChanged:(NSPopUpButton *)sender {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSInteger selectedTransition = sender.indexOfSelectedItem;
     [defaults setInteger:selectedTransition forKey:kTransitionTypeKey];
     [defaults synchronize];
-    
+
     self.durationSlider.enabled = (selectedTransition != TransitionTypeNone);
     self.durationLabel.textColor = (selectedTransition != TransitionTypeNone) ? [NSColor labelColor] : [NSColor disabledControlTextColor];
 }
@@ -895,8 +1025,54 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 }
 
 - (IBAction)closeConfigSheet:(id)sender {
-    [NSApp endSheet:self.configSheet];
-    self.configSheet = nil;  // Reset so it gets recreated on next open
+    NSWindow *sheet = self.configSheet;
+
+    // macOS 26 (Sequoia) compatibility: properly dismiss the sheet
+    if (sheet.sheetParent) {
+        // If presented as a sheet, end it properly
+        [sheet.sheetParent endSheet:sheet];
+    } else {
+        // Fallback for older macOS versions or if not presented as sheet
+        [NSApp endSheet:sheet];
+    }
+
+    [sheet orderOut:self];  // Explicitly order out the window
+
+    // Clear references AFTER dismissing
+    self.configSheet = nil;
+    self.folderBookmarks = nil;  // Reset so it reloads from UserDefaults next time
+}
+
+#pragma mark - Helper Methods
+
+- (NSString *)videoGravityFromScaling:(VideoScaling)scaling {
+    switch (scaling) {
+        case VideoScalingFit:
+            return AVLayerVideoGravityResizeAspect;  // Fit entire video, letterbox if needed
+        case VideoScalingStretch:
+            return AVLayerVideoGravityResize;  // Stretch to fill, distorts aspect ratio
+        case VideoScalingFill:
+        default:
+            return AVLayerVideoGravityResizeAspectFill;  // Fill screen, crop if needed
+    }
+}
+
+- (IBAction)scalingChanged:(NSPopUpButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    NSInteger selectedScaling = sender.indexOfSelectedItem;
+    [defaults setInteger:selectedScaling forKey:kVideoScalingKey];
+    [defaults synchronize];
+
+    // Apply to player layers immediately
+    NSString *videoGravity = [self videoGravityFromScaling:(VideoScaling)selectedScaling];
+    self.playerLayerA.videoGravity = videoGravity;
+    self.playerLayerB.videoGravity = videoGravity;
+
+    // Reload videos if in preview to see the change
+    if (self.isPreview) {
+        [self stopAnimation];
+        [self startAnimation];
+    }
 }
 
 #pragma mark - NSTableView DataSource
