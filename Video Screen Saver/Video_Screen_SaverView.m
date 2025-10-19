@@ -97,12 +97,14 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
 // Dual Player System for seamless transitions
 @property (strong) AVPlayer *playerA;
 @property (strong) AVPlayerLayer *playerLayerA;
+@property (strong) NSView *playerViewA;
 @property (strong) AVPlayerItem *playerItemA;
 @property (strong) AVPlayer *playerB;
 @property (strong) AVPlayerLayer *playerLayerB;
+@property (strong) NSView *playerViewB;
 @property (strong) AVPlayerItem *playerItemB;
 @property (weak) AVPlayer *activePlayer;
-@property (weak) AVPlayerLayer *activePlayerLayer;
+@property (weak) NSView *activePlayerView;
 
 // Timeline Observer
 @property (strong) id timeObserverToken;
@@ -159,13 +161,25 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
         self.playerLayerA = [AVPlayerLayer playerLayerWithPlayer:self.playerA];
         self.playerLayerB = [AVPlayerLayer playerLayerWithPlayer:self.playerB];
 
+        // Create views to host the player layers
+        self.playerViewA = [[NSView alloc] initWithFrame:self.bounds];
+        self.playerViewA.wantsLayer = YES;
+        self.playerViewA.layer = self.playerLayerA;
+        self.playerViewA.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+        self.playerViewB = [[NSView alloc] initWithFrame:self.bounds];
+        self.playerViewB.wantsLayer = YES;
+        self.playerViewB.layer = self.playerLayerB;
+        self.playerViewB.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
         // Apply saved video scaling preference
         NSString *videoGravity = [self videoGravityFromScaling:(VideoScaling)[defaults integerForKey:kVideoScalingKey]];
         self.playerLayerA.videoGravity = videoGravity;
         self.playerLayerB.videoGravity = videoGravity;
 
-        self.playerLayerA.frame = self.bounds;
-        self.playerLayerB.frame = self.bounds;
+        // Frame is managed by the view's autoresizing mask
+        // self.playerLayerA.frame = self.bounds;
+        // self.playerLayerB.frame = self.bounds;
 
         // Optimize rendering performance
         self.playerLayerA.contentsScale = isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
@@ -197,19 +211,14 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     [super startAnimation];
     self.isPreparingNextVideo = NO;
 
-    // Ensure at least one player layer is visible from the start
-    if (!self.playerLayerA.superlayer && !self.playerLayerB.superlayer) {
-        [self.layer addSublayer:self.playerLayerA];
-        self.activePlayerLayer = self.playerLayerA;
+    // Ensure at least one player view is visible from the start
+    if (!self.playerViewA.superview && !self.playerViewB.superview) {
+        [self addSubview:self.playerViewA];
+        self.activePlayerView = self.playerViewA;
         self.activePlayer = self.playerA;
     }
 
-    // Disable implicit animations to reduce CPU usage
-    [CATransaction begin];
-    [CATransaction setDisableActions:YES];
-    self.playerLayerA.frame = self.bounds;
-    self.playerLayerB.frame = self.bounds;
-    [CATransaction commit];
+    // The view's autoresizing mask handles frame changes, so manual frame setting is not needed here.
 
     [self loadPlaylistAndStartPlayback];
 }
@@ -249,12 +258,12 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     self.playerItemA = nil;
     self.playerItemB = nil;
 
-    // Remove layers from hierarchy
-    [self.playerLayerA removeFromSuperlayer];
-    [self.playerLayerB removeFromSuperlayer];
+    // Remove views from hierarchy
+    [self.playerViewA removeFromSuperview];
+    [self.playerViewB removeFromSuperview];
 
     // Clear references
-    self.activePlayerLayer = nil;
+    self.activePlayerView = nil;
     self.activePlayer = nil;
     self.isPreparingNextVideo = NO;
     self.videoURLs = nil;
@@ -392,15 +401,15 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
 
             BOOL isPlayerA = (playerItem == self.playerItemA);
             AVPlayer *newPlayer = isPlayerA ? self.playerA : self.playerB;
-            AVPlayerLayer *newLayer = isPlayerA ? self.playerLayerA : self.playerLayerB;
+            NSView *newView = isPlayerA ? self.playerViewA : self.playerViewB;
             
             // Perform the transition, now guaranteed to have a frame to show.
-            [self performTransitionFrom:self.activePlayerLayer to:newLayer];
+            [self performTransitionFrom:self.activePlayerView to:newView];
             
             // Update the active player references.
             AVPlayer *oldPlayer = self.activePlayer;
             self.activePlayer = newPlayer;
-            self.activePlayerLayer = newLayer;
+            self.activePlayerView = newView;
 
             // Clean up the old player's time observer.
             if (self.timeObserverToken && oldPlayer) {
@@ -488,40 +497,51 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
     }
 }
 
-- (void)performTransitionFrom:(AVPlayerLayer *)oldLayer to:(AVPlayerLayer *)newLayer {
+- (void)performTransitionFrom:(NSView *)oldView to:(NSView *)newView {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     TransitionType transition = (TransitionType)[defaults integerForKey:kTransitionTypeKey];
     double duration = [defaults doubleForKey:kTransitionDurationKey];
     
-    if (transition == TransitionTypeNone || oldLayer == nil) {
-        if (oldLayer) [oldLayer removeFromSuperlayer];
-        [self.layer addSublayer:newLayer];
+    if (transition == TransitionTypeNone || oldView == nil) {
+        if (oldView) [oldView removeFromSuperview];
+        [self addSubview:newView];
         return;
     }
 
     if (transition == TransitionTypeCrossDissolve) {
-        newLayer.opacity = 0.0;
-        [self.layer addSublayer:newLayer];
-        [CATransaction begin];
-        [CATransaction setAnimationDuration:duration];
-        [CATransaction setCompletionBlock:^{ [oldLayer removeFromSuperlayer]; oldLayer.opacity = 1.0; }];
-        newLayer.opacity = 1.0;
-        oldLayer.opacity = 0.0;
-        [CATransaction commit];
+        newView.alphaValue = 0.0;
+        [self addSubview:newView];
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext * _Nonnull context) {
+            context.duration = duration;
+            newView.animator.alphaValue = 1.0;
+            if (oldView) {
+                oldView.animator.alphaValue = 0.0;
+            }
+        } completionHandler:^{
+            if (oldView) {
+                [oldView removeFromSuperview];
+                oldView.alphaValue = 1.0; // Reset for next use
+            }
+        }];
     } else if (transition == TransitionTypeFade) {
-        [self.layer insertSublayer:newLayer below:oldLayer];
-        [CATransaction begin];
-        [CATransaction setAnimationDuration:duration];
-        [CATransaction setCompletionBlock:^{ [oldLayer removeFromSuperlayer]; oldLayer.opacity = 1.0; }];
-        oldLayer.opacity = 0.0;
-        [CATransaction commit];
+        [self addSubview:newView positioned:NSWindowBelow relativeTo:oldView];
+        [NSAnimationContext runAnimationGroup:^(NSAnimationContext * _Nonnull context) {
+            context.duration = duration;
+            if (oldView) {
+                oldView.animator.alphaValue = 0.0;
+            }
+        } completionHandler:^{
+            if (oldView) {
+                [oldView removeFromSuperview];
+                oldView.alphaValue = 1.0; // Reset for next use
+            }
+        }];
     }
 }
 
 - (void)layout {
     [super layout];
-    self.playerLayerA.frame = self.bounds;
-    self.playerLayerB.frame = self.bounds;
+    // Player view frames are managed by autoresizing masks.
 }
 
 #pragma mark - Helper Methods
@@ -1373,51 +1393,28 @@ typedef NS_ENUM(NSInteger, FilenameFontType) {
 
     // Apply glass effect if enabled (use NSVisualEffectView like macOS time/date)
     if (glassEffect) {
-        // Create NSVisualEffectView directly for frosted glass appearance
+        // Create NSVisualEffectView. Its frame defines the area where the text can appear.
         NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:CGRectMake(xPos, yPos, width, height)];
-
-        // Use ContentBackground material for a lighter, more translucent frosted glass effect
-        // This material blurs the content BEHIND it within the same window
         effectView.material = NSVisualEffectMaterialContentBackground;
         effectView.state = NSVisualEffectStateActive;
-
-        // CRITICAL: Use WithinWindow blending mode to blur the video content behind it
-        // BehindWindow only works for desktop wallpaper, not content in the same window
         effectView.blendingMode = NSVisualEffectBlendingModeWithinWindow;
+        effectView.wantsLayer = YES; // A layer is required to apply a mask.
 
-        effectView.wantsLayer = YES;
-        effectView.layer.cornerRadius = 12.0;
-        effectView.layer.masksToBounds = YES;
+        // Create a text field that will be used as a mask.
+        // Its frame should match the effect view's bounds to allow for centered alignment.
+        NSTextField *maskLabel = [[NSTextField alloc] initWithFrame:effectView.bounds];
+        maskLabel.stringValue = filename;
+        maskLabel.font = font;
+        maskLabel.textColor = [NSColor whiteColor]; // For a mask, only alpha matters.
+        maskLabel.alignment = NSTextAlignmentCenter;
+        maskLabel.editable = NO;
+        maskLabel.bordered = NO;
+        maskLabel.drawsBackground = NO;
 
-        // Add subtle tint for better contrast
-        effectView.layer.backgroundColor = [[NSColor blackColor] colorWithAlphaComponent:0.15].CGColor;
-
-        // Create text field for the filename - use full width with proper sizing
-        // Calculate proper text field height to avoid truncation
-        CGFloat textFieldHeight = textSize.height + 4; // Add small vertical padding
-        CGFloat textFieldY = (height - textFieldHeight) / 2.0; // Center vertically
-
-        NSTextField *label = [[NSTextField alloc] initWithFrame:NSMakeRect(padding, textFieldY, width - padding * 2, textFieldHeight)];
-        label.stringValue = filename;
-        label.font = font;
-        label.textColor = [NSColor whiteColor];
-        label.alignment = NSTextAlignmentCenter;
-        label.editable = NO;
-        label.bordered = NO;
-        label.drawsBackground = NO;
-        label.alphaValue = opacity;
-
-        // Ensure text doesn't get clipped
-        label.lineBreakMode = NSLineBreakByClipping;
-        label.cell.wraps = NO;
-
-        [effectView addSubview:label];
-
-        // Add shadow to the effect view for depth
-        effectView.shadow = [[NSShadow alloc] init];
-        effectView.shadow.shadowColor = [[NSColor blackColor] colorWithAlphaComponent:0.5];
-        effectView.shadow.shadowOffset = NSMakeSize(0, -2);
-        effectView.shadow.shadowBlurRadius = 8.0;
+        // Set the text field's layer as the mask for the effect view's layer.
+        // The effect view will only be visible where the text is, creating "glass text".
+        effectView.layer.mask = maskLabel.layer;
+        effectView.alphaValue = opacity; // Apply opacity to the whole effect.
 
         self.filenameOverlayView = effectView;
         [self addSubview:self.filenameOverlayView];
