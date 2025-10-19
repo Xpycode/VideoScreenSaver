@@ -22,6 +22,9 @@ static NSString * const kTransitionTypeKey = @"transitionType";
 static NSString * const kTransitionDurationKey = @"transitionDuration";
 static NSString * const kVideoScalingKey = @"videoScaling";
 static NSString * const kRecursiveScanKey = @"recursiveScan";
+static NSString * const kShowFilenameKey = @"showFilename";
+static NSString * const kFilenamePositionKey = @"filenamePosition";
+static NSString * const kFilenameFontSizeKey = @"filenameFontSize";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
@@ -38,6 +41,13 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     VideoScalingStretch     // AVLayerVideoGravityResize - Stretch to fill (distorts aspect)
 };
 
+typedef NS_ENUM(NSInteger, FilenamePosition) {
+    FilenamePositionBottomLeft,
+    FilenamePositionBottomRight,
+    FilenamePositionTopLeft,
+    FilenamePositionTopRight
+};
+
 @interface Video_Screen_SaverView () <NSTableViewDelegate, NSTableViewDataSource>
 
 // Configuration Sheet Properties
@@ -51,6 +61,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSTextField *durationLabel;
 @property (strong) NSPopUpButton *scalingPopUpButton;
 @property (strong) NSButton *recursiveScanCheckbox;
+@property (strong) NSButton *showFilenameCheckbox;
+@property (strong) NSPopUpButton *filenamePositionPopUpButton;
+@property (strong) NSSlider *filenameFontSizeSlider;
+@property (strong) NSTextField *filenameFontSizeLabel;
 
 // Two-pane UI Properties
 @property (strong) NSTableView *categoryTableView;
@@ -81,6 +95,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 // KVO tracking - use a set to track all observed items
 @property (strong) NSMutableSet<AVPlayerItem *> *observedItems;
 
+// Filename overlay
+@property (strong) CATextLayer *filenameOverlayLayer;
+
 @end
 
 @implementation Video_Screen_SaverView
@@ -105,7 +122,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             kTransitionTypeKey: @(TransitionTypeCrossDissolve),
             kTransitionDurationKey: @1.5,
             kVideoScalingKey: @(VideoScalingFill),
-            kRecursiveScanKey: @NO
+            kRecursiveScanKey: @NO,
+            kShowFilenameKey: @NO,
+            kFilenamePositionKey: @(FilenamePositionBottomLeft),
+            kFilenameFontSizeKey: @18.0
         }];
         
         self.playerA = [[AVPlayer alloc] init];
@@ -377,7 +397,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             // Set up observers to prepare the *next* video.
             [self setupBoundaryTimeObserverForURL:((AVURLAsset *)playerItem.asset).URL];
             [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerItemDidReachEnd:) name:AVPlayerItemDidPlayToEndTimeNotification object:playerItem];
-            
+
+            // Update filename overlay for the new video
+            NSURL *videoURL = ((AVURLAsset *)playerItem.asset).URL;
+            [self updateFilenameOverlayForVideo:videoURL];
+
             // Unlock to allow the next video to be prepared.
             self.isPreparingNextVideo = NO;
             
@@ -838,6 +862,55 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.durationSlider.target = self;
     self.durationSlider.action = @selector(sliderValueChanged:);
     [self.rightPaneView addSubview:self.durationSlider];
+
+    yPos -= 70;
+
+    // Show Filename checkbox
+    self.showFilenameCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    [self.showFilenameCheckbox setButtonType:NSButtonTypeSwitch];
+    self.showFilenameCheckbox.title = @"Show Filename";
+    self.showFilenameCheckbox.target = self;
+    self.showFilenameCheckbox.action = @selector(showFilenameCheckboxClicked:);
+    [self.rightPaneView addSubview:self.showFilenameCheckbox];
+
+    yPos -= 30;
+
+    // Filename Position label and popup
+    NSTextField *positionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos, 80, 24)];
+    positionLabel.stringValue = @"Position:";
+    positionLabel.editable = NO;
+    positionLabel.bezeled = NO;
+    positionLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:positionLabel];
+
+    self.filenamePositionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
+    [self.filenamePositionPopUpButton addItemsWithTitles:@[@"Bottom Left", @"Bottom Right", @"Top Left", @"Top Right"]];
+    self.filenamePositionPopUpButton.target = self;
+    self.filenamePositionPopUpButton.action = @selector(filenamePositionChanged:);
+    [self.rightPaneView addSubview:self.filenamePositionPopUpButton];
+
+    yPos -= 30;
+
+    // Font Size label and slider
+    NSTextField *fontSizeTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(40, yPos + 10, 80, 24)];
+    fontSizeTitleLabel.stringValue = @"Font Size:";
+    fontSizeTitleLabel.editable = NO;
+    fontSizeTitleLabel.bezeled = NO;
+    fontSizeTitleLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:fontSizeTitleLabel];
+
+    self.filenameFontSizeLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, yPos + 10, 50, 24)];
+    self.filenameFontSizeLabel.editable = NO;
+    self.filenameFontSizeLabel.bezeled = NO;
+    self.filenameFontSizeLabel.drawsBackground = NO;
+    [self.rightPaneView addSubview:self.filenameFontSizeLabel];
+
+    self.filenameFontSizeSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(40, yPos - 15, 280, 24)];
+    self.filenameFontSizeSlider.minValue = 12.0;
+    self.filenameFontSizeSlider.maxValue = 48.0;
+    self.filenameFontSizeSlider.target = self;
+    self.filenameFontSizeSlider.action = @selector(filenameFontSizeChanged:);
+    [self.rightPaneView addSubview:self.filenameFontSizeSlider];
 }
 
 - (void)refreshUIFromDefaults {
@@ -856,6 +929,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     if (self.recursiveScanCheckbox) {
         self.recursiveScanCheckbox.state = [defaults boolForKey:kRecursiveScanKey] ? NSControlStateValueOn : NSControlStateValueOff;
     }
+    if (self.showFilenameCheckbox) {
+        self.showFilenameCheckbox.state = [defaults boolForKey:kShowFilenameKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
 
     // Update scaling popup if it exists
     if (self.scalingPopUpButton) {
@@ -870,6 +946,15 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     if (self.durationSlider) {
         self.durationSlider.doubleValue = [defaults doubleForKey:kTransitionDurationKey];
         [self updateDurationLabel];
+    }
+
+    // Update filename overlay controls if they exist
+    if (self.filenamePositionPopUpButton) {
+        [self.filenamePositionPopUpButton selectItemAtIndex:[defaults integerForKey:kFilenamePositionKey]];
+    }
+    if (self.filenameFontSizeSlider) {
+        self.filenameFontSizeSlider.doubleValue = [defaults doubleForKey:kFilenameFontSizeKey];
+        [self updateFilenameFontSizeLabel];
     }
 
     // Reload folder table
@@ -1024,6 +1109,39 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.durationLabel.stringValue = [NSString stringWithFormat:@"%.1f s", self.durationSlider.doubleValue];
 }
 
+- (void)updateFilenameFontSizeLabel {
+    self.filenameFontSizeLabel.stringValue = [NSString stringWithFormat:@"%.0f pt", self.filenameFontSizeSlider.doubleValue];
+}
+
+- (IBAction)showFilenameCheckboxClicked:(NSButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL isEnabled = (sender.state == NSControlStateValueOn);
+    [defaults setBool:isEnabled forKey:kShowFilenameKey];
+    [defaults synchronize];
+
+    // Update the overlay immediately
+    [self updateFilenameOverlay];
+}
+
+- (IBAction)filenamePositionChanged:(NSPopUpButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    [defaults setInteger:sender.indexOfSelectedItem forKey:kFilenamePositionKey];
+    [defaults synchronize];
+
+    // Update the overlay immediately
+    [self updateFilenameOverlay];
+}
+
+- (IBAction)filenameFontSizeChanged:(NSSlider *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    [defaults setDouble:sender.doubleValue forKey:kFilenameFontSizeKey];
+    [defaults synchronize];
+    [self updateFilenameFontSizeLabel];
+
+    // Update the overlay immediately
+    [self updateFilenameOverlay];
+}
+
 - (IBAction)closeConfigSheet:(id)sender {
     NSWindow *sheet = self.configSheet;
 
@@ -1041,6 +1159,86 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     // Clear references AFTER dismissing
     self.configSheet = nil;
     self.folderBookmarks = nil;  // Reset so it reloads from UserDefaults next time
+}
+
+#pragma mark - Filename Overlay Methods
+
+- (void)updateFilenameOverlay {
+    // Called when settings change (without video URL)
+    if (self.currentVideoIndex >= 0 && self.currentVideoIndex < self.videoURLs.count) {
+        NSURL *currentURL = self.videoURLs[self.currentVideoIndex];
+        [self updateFilenameOverlayForVideo:currentURL];
+    }
+}
+
+- (void)updateFilenameOverlayForVideo:(NSURL *)videoURL {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL showFilename = [defaults boolForKey:kShowFilenameKey];
+
+    // Remove existing overlay if present
+    if (self.filenameOverlayLayer) {
+        [self.filenameOverlayLayer removeFromSuperlayer];
+        self.filenameOverlayLayer = nil;
+    }
+
+    // Don't create overlay if disabled
+    if (!showFilename || !videoURL) {
+        return;
+    }
+
+    // Create text layer for filename
+    self.filenameOverlayLayer = [CATextLayer layer];
+    self.filenameOverlayLayer.string = videoURL.lastPathComponent.stringByDeletingPathExtension;
+
+    // Configure appearance
+    CGFloat fontSize = [defaults doubleForKey:kFilenameFontSizeKey];
+    self.filenameOverlayLayer.fontSize = fontSize;
+    self.filenameOverlayLayer.font = (__bridge CFTypeRef)[NSFont systemFontOfSize:fontSize];
+    self.filenameOverlayLayer.foregroundColor = [[NSColor whiteColor] CGColor];
+
+    // Add shadow for better visibility
+    self.filenameOverlayLayer.shadowColor = [[NSColor blackColor] CGColor];
+    self.filenameOverlayLayer.shadowOpacity = 0.8;
+    self.filenameOverlayLayer.shadowOffset = CGSizeMake(2, -2);
+    self.filenameOverlayLayer.shadowRadius = 4.0;
+
+    // Calculate size
+    NSString *filename = videoURL.lastPathComponent.stringByDeletingPathExtension;
+    NSDictionary *attributes = @{NSFontAttributeName: [NSFont systemFontOfSize:fontSize]};
+    CGSize textSize = [filename sizeWithAttributes:attributes];
+    CGFloat padding = 20.0;
+    CGFloat width = textSize.width + (padding * 2);
+    CGFloat height = textSize.height + (padding * 2);
+
+    // Position based on user preference
+    FilenamePosition position = (FilenamePosition)[defaults integerForKey:kFilenamePositionKey];
+    CGRect bounds = self.bounds;
+    CGFloat xPos, yPos;
+
+    switch (position) {
+        case FilenamePositionBottomLeft:
+            xPos = padding;
+            yPos = padding;
+            break;
+        case FilenamePositionBottomRight:
+            xPos = bounds.size.width - width - padding;
+            yPos = padding;
+            break;
+        case FilenamePositionTopLeft:
+            xPos = padding;
+            yPos = bounds.size.height - height - padding;
+            break;
+        case FilenamePositionTopRight:
+            xPos = bounds.size.width - width - padding;
+            yPos = bounds.size.height - height - padding;
+            break;
+    }
+
+    self.filenameOverlayLayer.frame = CGRectMake(xPos, yPos, width, height);
+    self.filenameOverlayLayer.contentsScale = [[NSScreen mainScreen] backingScaleFactor];
+
+    // Add to layer hierarchy on top of everything
+    [self.layer addSublayer:self.filenameOverlayLayer];
 }
 
 #pragma mark - Helper Methods
