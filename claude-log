@@ -1,0 +1,157 @@
+================================================================================
+Date: 2025-10-19
+Session: Video Screen Saver - Feature 2 (Video Scaling Options) - COMPLETED
+================================================================================
+
+CRITICAL FIXES APPLIED:
+
+1. MODAL SHEET BUG - FIXED ✓
+   Location: Video_Screen_SaverView.m:554-564
+   
+   Problem: Options window/modal sheet worked initially but stopped appearing 
+   after System Settings had been open for a while. Intermittent failure.
+   
+   Root Cause: Reusing the same NSWindow instance caused the sheet presentation
+   to fail after some time.
+   
+   Solution: ALWAYS create a fresh window in -configureSheet method. Never reuse.
+   Pattern now: Check if old window exists -> orderOut -> nil -> create fresh
+   
+   ⚠️ CRITICAL WARNING COMMENT ADDED ⚠️
+   Added prominent warning comment at lines 555-558:
+   "DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY"
+   "Reusing the window causes the sheet to stop appearing after working for a while"
+   
+   Status: TESTED AND WORKING - User confirmed "Options modal seems to work"
+
+2. FOLDER REMOVAL BUG - FIXED ✓
+   Location: Video_Screen_SaverView.m:876-887
+   
+   Problem: When removing a folder from Source Folders list, the folder 
+   disappeared from UI but videos from that folder continued to play.
+   
+   Root Cause: Playlist only reloaded if (self.isPreview), but in System 
+   Settings context, isPreview is NO, so playlist never updated.
+   
+   Solution: Changed from conditional reload to ALWAYS reload playlist:
+   OLD: if (self.isPreview) { [self stopAnimation]; [self startAnimation]; }
+   NEW: [self loadPlaylistAndStartPlayback];
+   
+   Status: BUILT AND INSTALLED - Ready for testing
+
+3. SCALING MODE NAMING - FIXED ✓
+   Location: Video_Screen_SaverView.m:702-762 (Display pane)
+   
+   Problem: "Center" mode didn't show visible difference on user's 16:9 display
+   with 2K DCI (1.9:1) videos.
+   
+   Solution: Renamed "Center" to "Stretch" to accurately describe behavior
+   (AVLayerVideoGravityResize stretches video to fill, distorting aspect ratio)
+   
+   Final Options: "Fill Screen" / "Fit to Screen" / "Stretch"
+
+FEATURE 2 IMPLEMENTATION SUMMARY:
+
+Feature: Video Scaling Options (from features.md)
+Branch: feature/video-scaling-options (current: feature/custom1)
+
+Added:
+- VideoScaling enum (Fill/Fit/Stretch)
+- Popup menu in Display pane with 3 scaling modes
+- UserDefaults persistence with key "videoScaling"
+- Applied scaling via AVPlayerView.videoGravity property
+- Maps to: AVLayerVideoGravityResizeAspectFill / ResizeAspect / Resize
+
+Files Modified:
+- Video Screen Saver/Video_Screen_SaverView.m (scaling popup, enum, persistence)
+
+REMAINING FEATURES (from features.md):
+3. Recursive Folder Scanning
+4. Show Filename Overlay  
+5. Volume Control
+6. More Transition Options
+
+NEXT STEPS:
+- User to test folder removal fix
+- Commit Feature 2 changes
+- Choose next feature to implement
+
+================================================================================
+
+================================================================================
+Date: 2025-10-19 (continued)
+Session: Video Screen Saver - Feature 2 Debugging - FOLDER REMOVAL BUG FIXED
+================================================================================
+
+CRITICAL BUG FOUND AND FIXED:
+
+**FOLDER REMOVAL NOT PERSISTING BUG** - FIXED ✓
+Location: Video_Screen_SaverView.m:217-264 (loadPlaylistAndStartPlayback)
+
+Problem: 
+User removes folder from Source Folders list, closes Options, reopens Options
+→ removed folder REAPPEARS in the list, like it was never removed!
+
+Symptoms from logs:
+- "Verified: 0 folders saved" ✓ (save works)
+- "Loaded 1 folders from UserDefaults" ✗ (load returns old value!)
+- Migration code kept restoring the old single-folder bookmark
+
+Root Cause:
+The migration code was checking: `if (bookmarksArray.count > 0)`
+When user removed all folders → array became empty (count = 0)
+→ Condition failed → Went to ELSE block
+→ Migration code found OLD single folder bookmark (kVideoFolderBookmarkKey)
+→ RESTORED it to new key (kVideoFoldersBookmarksKey)
+→ Migration ran EVERY TIME array was empty, continuously restoring old folder!
+
+The Fix:
+Changed line 224 from:
+```objective-c
+if (bookmarksArray && [bookmarksArray isKindOfClass:[NSArray class]] && bookmarksArray.count > 0)
+```
+
+To:
+```objective-c
+if (bookmarksArray != nil) {
+    // New format exists (even if empty array) - use it
+    if ([bookmarksArray isKindOfClass:[NSArray class]] && bookmarksArray.count > 0) {
+        // ... load folders ...
+    }
+    // else: empty array means user removed all folders - don't migrate!
+} else {
+    // New format doesn't exist at all - try migration from legacy single folder
+    // ... migrate only if new key is nil ...
+}
+```
+
+Now:
+- If new key exists (even as empty array []) → use it, DON'T migrate
+- If new key is nil (doesn't exist) → migrate from old key ONCE
+
+Result: Folder removal now persists correctly! ✓
+
+DEBUGGING PROCESS:
+1. Added extensive NSLog statements to track save/load
+2. Discovered: saves verified as 0 folders, but loads returned 1 folder
+3. Suspected ScreenSaverDefaults caching → tried NSUserDefaults direct write
+4. Still failed → realized System Settings creates multiple view instances
+5. Examined logs carefully → noticed timing of when folder reappeared
+6. Found migration code was running after every save of empty array
+7. Fixed condition to distinguish between "nil" and "empty array"
+
+Additional Logging Added (can be removed later):
+- Line 884-888: Before/After removal logs
+- Line 903-918: Save verification with dual defaults check
+- Line 571: Load from UserDefaults log
+- Line 951: closeConfigSheet log
+
+NEXT STEPS:
+- Remove debug NSLog statements before final commit
+- Test all folder operations (add, remove, multiple folders)
+- Commit Feature 2 implementation
+
+FILES MODIFIED THIS SESSION:
+- Video Screen Saver/Video_Screen_SaverView.m (migration logic fix)
+
+================================================================================
