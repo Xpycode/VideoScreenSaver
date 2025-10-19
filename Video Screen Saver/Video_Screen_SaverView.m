@@ -21,6 +21,7 @@ static NSString * const kLoopKey = @"loop";
 static NSString * const kTransitionTypeKey = @"transitionType";
 static NSString * const kTransitionDurationKey = @"transitionDuration";
 static NSString * const kVideoScalingKey = @"videoScaling";
+static NSString * const kRecursiveScanKey = @"recursiveScan";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
@@ -49,6 +50,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSSlider *durationSlider;
 @property (strong) NSTextField *durationLabel;
 @property (strong) NSPopUpButton *scalingPopUpButton;
+@property (strong) NSButton *recursiveScanCheckbox;
 
 // Two-pane UI Properties
 @property (strong) NSTableView *categoryTableView;
@@ -102,7 +104,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             kLoopKey: @YES,
             kTransitionTypeKey: @(TransitionTypeCrossDissolve),
             kTransitionDurationKey: @1.5,
-            kVideoScalingKey: @(VideoScalingFill)
+            kVideoScalingKey: @(VideoScalingFill),
+            kRecursiveScanKey: @NO
         }];
         
         self.playerA = [[AVPlayer alloc] init];
@@ -481,37 +484,82 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 #pragma mark - Helper Methods
 
 - (NSArray<NSURL *> *)getVideoURLsFromFolder:(NSURL *)folderURL {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    NSError *dirError = nil;
-    NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:folderURL
-                              includingPropertiesForKeys:@[NSURLContentTypeKey]
-                                                 options:NSDirectoryEnumerationSkipsHiddenFiles
-                                                   error:&dirError];
-    if (dirError) {
-        os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading directory: %@", dirError);
-        return @[];
-    }
-    
-    NSMutableArray<NSURL *> *videoURLs = [NSMutableArray array];
-    for (NSURL *fileURL in files) {
-        id contentType = nil;
-        NSError *utiError = nil;
-        [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL recursiveScan = [defaults boolForKey:kRecursiveScanKey];
 
-        if (contentType && !utiError) {
-            UTType *type = nil;
-            // macOS 26 returns UTType directly, older versions return NSString
-            if ([contentType isKindOfClass:[UTType class]]) {
-                type = (UTType *)contentType;
-            } else if ([contentType isKindOfClass:[NSString class]]) {
-                type = [UTType typeWithIdentifier:(NSString *)contentType];
+    NSFileManager *fm = [NSFileManager defaultManager];
+    NSMutableArray<NSURL *> *videoURLs = [NSMutableArray array];
+
+    if (recursiveScan) {
+        // Recursive enumeration - scans all subdirectories
+        NSDirectoryEnumerator<NSURL *> *enumerator = [fm enumeratorAtURL:folderURL
+                                              includingPropertiesForKeys:@[NSURLContentTypeKey, NSURLIsDirectoryKey]
+                                                                 options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                            errorHandler:^BOOL(NSURL *url, NSError *error) {
+            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading %@: %@", url, error);
+            return YES; // Continue enumeration
+        }];
+
+        for (NSURL *fileURL in enumerator) {
+            NSNumber *isDirectory = nil;
+            [fileURL getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:nil];
+
+            // Skip directories, we only want files
+            if ([isDirectory boolValue]) {
+                continue;
             }
 
-            if (type && [type conformsToType:UTTypeMovie]) {
-                [videoURLs addObject:fileURL];
+            id contentType = nil;
+            NSError *utiError = nil;
+            [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
+
+            if (contentType && !utiError) {
+                UTType *type = nil;
+                // macOS 26 returns UTType directly, older versions return NSString
+                if ([contentType isKindOfClass:[UTType class]]) {
+                    type = (UTType *)contentType;
+                } else if ([contentType isKindOfClass:[NSString class]]) {
+                    type = [UTType typeWithIdentifier:(NSString *)contentType];
+                }
+
+                if (type && [type conformsToType:UTTypeMovie]) {
+                    [videoURLs addObject:fileURL];
+                }
+            }
+        }
+    } else {
+        // Non-recursive - only scan top level
+        NSError *dirError = nil;
+        NSArray<NSURL *> *files = [fm contentsOfDirectoryAtURL:folderURL
+                                  includingPropertiesForKeys:@[NSURLContentTypeKey]
+                                                     options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                       error:&dirError];
+        if (dirError) {
+            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading directory: %@", dirError);
+            return @[];
+        }
+
+        for (NSURL *fileURL in files) {
+            id contentType = nil;
+            NSError *utiError = nil;
+            [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
+
+            if (contentType && !utiError) {
+                UTType *type = nil;
+                // macOS 26 returns UTType directly, older versions return NSString
+                if ([contentType isKindOfClass:[UTType class]]) {
+                    type = (UTType *)contentType;
+                } else if ([contentType isKindOfClass:[NSString class]]) {
+                    type = [UTType typeWithIdentifier:(NSString *)contentType];
+                }
+
+                if (type && [type conformsToType:UTTypeMovie]) {
+                    [videoURLs addObject:fileURL];
+                }
             }
         }
     }
+
     return [videoURLs copy];
 }
 
@@ -683,6 +731,14 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [removeButton setAction:@selector(removeFolderClicked:)];
     [removeButton setFont:[NSFont systemFontOfSize:18]];
     [self.rightPaneView addSubview:removeButton];
+
+    // Search Subfolders checkbox (positioned on the right side)
+    self.recursiveScanCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(200, 10, 190, 24)];
+    [self.recursiveScanCheckbox setButtonType:NSButtonTypeSwitch];
+    self.recursiveScanCheckbox.title = @"Search Subfolders";
+    self.recursiveScanCheckbox.target = self;
+    self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
+    [self.rightPaneView addSubview:self.recursiveScanCheckbox];
 }
 
 - (void)setupPlaybackPane {
@@ -796,6 +852,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     }
     if (self.loopCheckbox) {
         self.loopCheckbox.state = [defaults boolForKey:kLoopKey] ? NSControlStateValueOn : NSControlStateValueOff;
+    }
+    if (self.recursiveScanCheckbox) {
+        self.recursiveScanCheckbox.state = [defaults boolForKey:kRecursiveScanKey] ? NSControlStateValueOn : NSControlStateValueOff;
     }
 
     // Update scaling popup if it exists
@@ -931,12 +990,25 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     }
 }
 
+- (IBAction)recursiveScanCheckboxClicked:(NSButton *)sender {
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    BOOL isEnabled = (sender.state == NSControlStateValueOn);
+    [defaults setBool:isEnabled forKey:kRecursiveScanKey];
+    [defaults synchronize];
+
+    // Reload playlist if screensaver is running to apply the change immediately
+    if (self.videoURLs && self.videoURLs.count > 0) {
+        [self stopAnimation];
+        [self startAnimation];
+    }
+}
+
 - (IBAction)transitionChanged:(NSPopUpButton *)sender {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSInteger selectedTransition = sender.indexOfSelectedItem;
     [defaults setInteger:selectedTransition forKey:kTransitionTypeKey];
     [defaults synchronize];
-    
+
     self.durationSlider.enabled = (selectedTransition != TransitionTypeNone);
     self.durationLabel.textColor = (selectedTransition != TransitionTypeNone) ? [NSColor labelColor] : [NSColor disabledControlTextColor];
 }
