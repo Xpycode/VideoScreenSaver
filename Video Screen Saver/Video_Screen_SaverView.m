@@ -896,6 +896,7 @@ typedef NS_ENUM(NSInteger, TransitionType) {
 
 - (IBAction)closeConfigSheet:(id)sender {
     [NSApp endSheet:self.configSheet];
+    self.configSheet = nil;  // Reset so it gets recreated on next open
 }
 
 #pragma mark - NSTableView DataSource
