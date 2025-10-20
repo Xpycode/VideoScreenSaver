@@ -729,8 +729,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (480x480) - New compact layout
-    NSRect frame = NSMakeRect(0, 0, 480, 480);
+    // Create window (480x460) - New compact layout
+    NSRect frame = NSMakeRect(0, 0, 480, 460);
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -811,16 +811,16 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
     [contentView addSubview:self.recursiveScanCheckbox];
 
-    currentY -= 45;
+    currentY -= 35;
 
     // --- Separator ---
     NSBox *separator1 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 1)];
     separator1.boxType = NSBoxSeparator;
     [contentView addSubview:separator1];
-    currentY -= 25;
+    currentY -= 5;
 
     // --- Statistics ---
-    self.statsLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 40)];
+    self.statsLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 40, contentWidth, 40)];
     self.statsLabel.stringValue = @"Calculating...";
     self.statsLabel.alignment = NSTextAlignmentLeft;
     self.statsLabel.textColor = [NSColor secondaryLabelColor];
@@ -828,51 +828,51 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.statsLabel.bordered = NO;
     self.statsLabel.drawsBackground = NO;
     [contentView addSubview:self.statsLabel];
-    currentY -= 50;
+    currentY -= 45;
 
     // --- Separator ---
     NSBox *separator2 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 1)];
     separator2.boxType = NSBoxSeparator;
     [contentView addSubview:separator2];
-    currentY -= 35;
+    currentY -= 5;
 
     // --- Playback ---
-    self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin, currentY, 200, 24)];
+    self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 120, 24)];
     [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
     self.enableAudioCheckbox.title = @"Enable Audio";
     self.enableAudioCheckbox.target = self;
     self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
     [contentView addSubview:self.enableAudioCheckbox];
 
-    self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin + 160, currentY, 200, 24)];
+    self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin + 160, currentY - 24, 120, 24)];
     [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
     self.shuffleCheckbox.title = @"Shuffle Videos";
     self.shuffleCheckbox.target = self;
     self.shuffleCheckbox.action = @selector(settingCheckboxClicked:);
     [contentView addSubview:self.shuffleCheckbox];
 
-    self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin + 320, currentY, 200, 24)];
+    self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin + 320, currentY - 24, 120, 24)];
     [self.loopCheckbox setButtonType:NSButtonTypeSwitch];
     self.loopCheckbox.title = @"Loop Playlist";
     self.loopCheckbox.target = self;
     self.loopCheckbox.action = @selector(settingCheckboxClicked:);
     [contentView addSubview:self.loopCheckbox];
 
-    currentY -= 40;
+    currentY -= 35;
 
     // --- Separator ---
     NSBox *separator3 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 1)];
     separator3.boxType = NSBoxSeparator;
     [contentView addSubview:separator3];
-    currentY -= 35;
+    currentY -= 5;
 
     // --- Display ---
-    NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY, 100, 24)];
+    NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
     scalingLabel.stringValue = @"Video Scaling:";
     scalingLabel.editable = NO; scalingLabel.bezeled = NO; scalingLabel.drawsBackground = NO;
     [contentView addSubview:scalingLabel];
 
-    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY, 200, 24)];
+    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
     [self.scalingPopUpButton addItemsWithTitles:@[@"Fill Screen", @"Fit to Screen", @"Stretch"]];
     self.scalingPopUpButton.target = self;
     self.scalingPopUpButton.action = @selector(scalingChanged:);
@@ -880,12 +880,12 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     currentY -= 30;
 
-    NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY, 100, 24)];
+    NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
     transitionLabel.stringValue = @"Transition:";
     transitionLabel.editable = NO; transitionLabel.bezeled = NO; transitionLabel.drawsBackground = NO;
     [contentView addSubview:transitionLabel];
 
-    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY, 200, 24)];
+    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
     [self.transitionPopUpButton addItemsWithTitles:@[@"None", @"Fade", @"Cross Dissolve"]];
     self.transitionPopUpButton.target = self;
     self.transitionPopUpButton.action = @selector(transitionChanged:);
@@ -893,17 +893,17 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     currentY -= 30;
 
-    NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY, 100, 24)];
+    NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
     durationTitleLabel.stringValue = @"Duration:";
     durationTitleLabel.editable = NO; durationTitleLabel.bezeled = NO; durationTitleLabel.drawsBackground = NO;
     [contentView addSubview:durationTitleLabel];
 
-    self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY, 200, 24)];
+    self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
     self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
     self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
     [contentView addSubview:self.durationSlider];
 
-    self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + 310, currentY, 100, 24)];
+    self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + 310, currentY - 24, 100, 24)];
     self.durationLabel.editable = NO; self.durationLabel.bezeled = NO; self.durationLabel.drawsBackground = NO;
     [contentView addSubview:self.durationLabel];
 }
