@@ -712,9 +712,23 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 
 #pragma mark - Configuration Sheet
+#pragma mark - ScreenSaver Methods
+
 - (BOOL)hasConfigureSheet {
     return YES;
 }
+
+- (NSWindow*)configureSheet {
+    // ⚠️ CRITICAL: DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY ⚠️
+    if (self.configSheet) {
+        [self.configSheet orderOut:nil];
+        self.configSheet = nil;
+    }
+
+    // ALWAYS reload from UserDefaults
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
+    self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
     // Create window - size will be determined by the stack view's fitting size
     NSRect frame = NSMakeRect(0, 0, 480, 480); // Adjusted initial height
@@ -739,9 +753,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 - (void)setupSinglePaneUI:(NSView *)contentView {
     // --- Main Vertical StackView ---
+    // This is the root stack view that organizes the entire settings pane vertically.
     NSStackView *mainStack = [NSStackView new];
     mainStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    mainStack.spacing = 8; // Reduced spacing between items
+    mainStack.spacing = 16; // Consistent spacing between major sections
     mainStack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
     mainStack.translatesAutoresizingMaskIntoConstraints = NO;
     [contentView addSubview:mainStack];
@@ -769,18 +784,31 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.emptyStateLabel.editable = NO;
     self.emptyStateLabel.bordered = NO;
     self.emptyStateLabel.backgroundColor = [NSColor clearColor];
+    self.emptyStateLabel.translatesAutoresizingMaskIntoConstraints = NO;
     [contentView addSubview:self.emptyStateLabel]; // Add as overlay, not in stack
+
+    [NSLayoutConstraint activateConstraints:@[
+        [self.emptyStateLabel.centerXAnchor constraintEqualToAnchor:foldersScrollView.centerXAnchor],
+        [self.emptyStateLabel.centerYAnchor constraintEqualToAnchor:foldersScrollView.centerYAnchor],
+        [self.emptyStateLabel.widthAnchor constraintLessThanOrEqualToAnchor:foldersScrollView.widthAnchor constant:-20]
+    ]];
 
     // --- Folder Controls Row ---
     NSStackView *folderControlsStack = [NSStackView new];
     folderControlsStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     folderControlsStack.spacing = 8;
 
-    NSButton *addButton = [NSButton buttonWithTitle:@"+" target:self action:@selector(addFolderClicked:)];
+    NSButton *addButton = [[NSButton alloc] init];
+    addButton.title = @"+";
+    addButton.target = self;
+    addButton.action = @selector(addFolderClicked:);
     [addButton setBezelStyle:NSBezelStyleRounded];
     [folderControlsStack addArrangedSubview:addButton];
 
-    NSButton *removeButton = [NSButton buttonWithTitle:@"-" target:self action:@selector(removeFolderClicked:)];
+    NSButton *removeButton = [[NSButton alloc] init];
+    removeButton.title = @"-";
+    removeButton.target = self;
+    removeButton.action = @selector(removeFolderClicked:);
     [removeButton setBezelStyle:NSBezelStyleRounded];
     [folderControlsStack addArrangedSubview:removeButton];
 
@@ -794,15 +822,25 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [folderControlsStack addArrangedSubview:self.recursiveScanCheckbox];
     [mainStack addArrangedSubview:folderControlsStack];
     
-    [mainStack addArrangedSubview:[NSBox boxWithTitle:@"" boxType:NSBoxSeparator]];
+    // --- Section Separator ---
+    NSBox *separator1 = [[NSBox alloc] init];
+    separator1.boxType = NSBoxSeparator;
+    [mainStack addArrangedSubview:separator1];
 
     // --- Statistics ---
-    self.statsLabel = [NSTextField labelWithString:@"Calculating..."];
+    self.statsLabel = [[NSTextField alloc] init];
+    self.statsLabel.stringValue = @"Calculating...";
     self.statsLabel.alignment = NSTextAlignmentLeft;
     self.statsLabel.textColor = [NSColor secondaryLabelColor];
+    self.statsLabel.editable = NO;
+    self.statsLabel.bordered = NO;
+    self.statsLabel.drawsBackground = NO;
     [mainStack addArrangedSubview:self.statsLabel];
     
-    [mainStack addArrangedSubview:[NSBox boxWithTitle:@"" boxType:NSBoxSeparator]];
+    // --- Section Separator ---
+    NSBox *separator2 = [[NSBox alloc] init];
+    separator2.boxType = NSBoxSeparator;
+    [mainStack addArrangedSubview:separator2];
 
     // --- Playback Row ---
     NSStackView *playbackStack = [NSStackView new];
@@ -828,7 +866,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [playbackStack addArrangedSubview:self.loopCheckbox];
     [mainStack addArrangedSubview:playbackStack];
     
-    [mainStack addArrangedSubview:[NSBox boxWithTitle:@"" boxType:NSBoxSeparator]];
+    // --- Section Separator ---
+    NSBox *separator3 = [[NSBox alloc] init];
+    separator3.boxType = NSBoxSeparator;
+    [mainStack addArrangedSubview:separator3];
 
     // --- Display Rows ---
     self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -848,24 +889,29 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.durationSlider = [[NSSlider alloc] init];
     self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
     self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
-    self.durationLabel = [NSTextField labelWithString:@"0.0 s"];
+    self.durationLabel = [[NSTextField alloc] init];
+    self.durationLabel.stringValue = @"0.0 s";
     [self.durationLabel.widthAnchor constraintEqualToConstant:50].active = YES;
     NSStackView *durationStack = [self createLabelledControlStack:@"Duration:" control:self.durationSlider secondControl:self.durationLabel];
     [mainStack addArrangedSubview:durationStack];
     
     // --- OK Button ---
+    // A separate horizontal stack is used to right-align the OK button.
     NSButton *okButton = [[NSButton alloc] init];
     okButton.title = @"OK";
     okButton.bezelStyle = NSBezelStyleRounded;
-    okButton.keyEquivalent = @"\r";
+    okButton.keyEquivalent = @"\r"; // Allows pressing Enter to close
     okButton.target = self;
     okButton.action = @selector(closeConfigSheet:);
     
-    NSStackView *okButtonStack = [NSStackView stackViewWithViews:@[[NSView new], okButton]];
+    // A spacer view pushes the button to the right.
+    NSView *spacer = [NSView new];
+    NSStackView *okButtonStack = [NSStackView stackViewWithViews:@[spacer, okButton]];
     okButtonStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     [mainStack addArrangedSubview:okButtonStack];
 
     // --- Finalize Layout ---
+    // Activate constraints to pin the main stack to the content view's edges.
     [NSLayoutConstraint activateConstraints:@[
         [mainStack.topAnchor constraintEqualToAnchor:contentView.topAnchor],
         [mainStack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
@@ -873,7 +919,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         [mainStack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor]
     ]];
 
-    // Adjust window size to fit content
+    // Adjust window size to fit the content perfectly.
+    // This makes the window snug around the controls.
     NSRect contentRect = NSMakeRect(0, 0, mainStack.fittingSize.width, mainStack.fittingSize.height);
     NSRect newFrame = [self.configSheet frameRectForContentRect:contentRect];
     [self.configSheet setFrame:newFrame display:YES];
@@ -890,7 +937,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     stack.spacing = 8;
     stack.alignment = NSLayoutAttributeCenterY;
 
-    NSTextField *label = [NSTextField labelWithString:title];
+    NSTextField *label = [[NSTextField alloc] init];
+    label.stringValue = title;
+    label.editable = NO;
+    label.bordered = NO;
+    label.drawsBackground = NO;
     [label.widthAnchor constraintEqualToConstant:100].active = YES;
     label.alignment = NSTextAlignmentRight;
 
