@@ -895,8 +895,15 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     NSStackView *durationStack = [self createLabelledControlStack:@"Duration:" control:self.durationSlider secondControl:self.durationLabel];
     [mainStack addArrangedSubview:durationStack];
     
-    // --- OK Button ---
-    // A separate horizontal stack is used to right-align the OK button.
+    // --- Buttons ---
+    // A separate horizontal stack is used to right-align the buttons.
+    NSButton *cancelButton = [[NSButton alloc] init];
+    cancelButton.title = @"Cancel";
+    cancelButton.bezelStyle = NSBezelStyleRounded;
+    cancelButton.keyEquivalent = @"\e"; // Escape key
+    cancelButton.target = self;
+    cancelButton.action = @selector(cancel:);
+
     NSButton *okButton = [[NSButton alloc] init];
     okButton.title = @"OK";
     okButton.bezelStyle = NSBezelStyleRounded;
@@ -904,11 +911,12 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     okButton.target = self;
     okButton.action = @selector(closeConfigSheet:);
     
-    // A spacer view pushes the button to the right.
+    // A spacer view pushes the buttons to the right.
     NSView *spacer = [NSView new];
-    NSStackView *okButtonStack = [NSStackView stackViewWithViews:@[spacer, okButton]];
-    okButtonStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
-    [mainStack addArrangedSubview:okButtonStack];
+    NSStackView *buttonStack = [NSStackView stackViewWithViews:@[spacer, cancelButton, okButton]];
+    buttonStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    buttonStack.spacing = 8;
+    [mainStack addArrangedSubview:buttonStack];
 
     // --- Finalize Layout ---
     // Activate constraints to pin the main stack to the content view's edges.
@@ -1160,6 +1168,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     // Clear references AFTER dismissing
     self.configSheet = nil;
     self.folderBookmarks = nil;  // Reset so it reloads from UserDefaults next time
+}
+
+// This action is triggered when the user presses the Escape key.
+- (void)cancel:(id)sender {
+    [self closeConfigSheet:sender];
 }
 
 #pragma mark - Helper Methods
