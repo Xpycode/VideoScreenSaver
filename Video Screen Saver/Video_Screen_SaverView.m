@@ -24,6 +24,7 @@ static NSString * const kTransitionTypeKey = @"transitionType";
 static NSString * const kTransitionDurationKey = @"transitionDuration";
 static NSString * const kVideoScalingKey = @"videoScaling";
 static NSString * const kRecursiveScanKey = @"recursiveScan";
+static NSString * const kVolumeKey = @"volume";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
@@ -53,6 +54,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSTextField *durationLabel;
 @property (strong) NSPopUpButton *scalingPopUpButton;
 @property (strong) NSButton *recursiveScanCheckbox;
+@property (strong) NSSlider *volumeSlider;
+@property (strong) NSTextField *volumeLabel;
 
 // Single-pane UI Properties
 @property (strong) NSTableView *foldersTableView;
@@ -108,44 +111,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             kTransitionTypeKey: @(TransitionTypeCrossDissolve),
             kTransitionDurationKey: @1.5,
             kVideoScalingKey: @(VideoScalingFill),
-            kRecursiveScanKey: @NO
+            kRecursiveScanKey: @NO,
+            kVolumeKey: @0.75
         }];
-        
-        self.playerA = [[AVPlayer alloc] init];
-        self.playerB = [[AVPlayer alloc] init];
-
-        // Optimize player for screen saver use
-        self.playerA.preventsDisplaySleepDuringVideoPlayback = NO;
-        self.playerB.preventsDisplaySleepDuringVideoPlayback = NO;
-        self.playerA.actionAtItemEnd = AVPlayerActionAtItemEndNone;
-        self.playerB.actionAtItemEnd = AVPlayerActionAtItemEndNone;
-
-        self.playerLayerA = [AVPlayerLayer playerLayerWithPlayer:self.playerA];
-        self.playerLayerB = [AVPlayerLayer playerLayerWithPlayer:self.playerB];
-
-        // Create views to host the player layers
-        self.playerViewA = [[NSView alloc] initWithFrame:self.bounds];
-        self.playerViewA.wantsLayer = YES;
-        self.playerViewA.layer = self.playerLayerA;
-        self.playerViewA.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-
-        self.playerViewB = [[NSView alloc] initWithFrame:self.bounds];
-        self.playerViewB.wantsLayer = YES;
-        self.playerViewB.layer = self.playerLayerB;
-        self.playerViewB.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
-
-        // Apply saved video scaling preference
-        NSString *videoGravity = [self videoGravityFromScaling:(VideoScaling)[defaults integerForKey:kVideoScalingKey]];
-        self.playerLayerA.videoGravity = videoGravity;
-        self.playerLayerB.videoGravity = videoGravity;
-
-        // Frame is managed by the view's autoresizing mask
-        // self.playerLayerA.frame = self.bounds;
-        // self.playerLayerB.frame = self.bounds;
-
-        // Optimize rendering performance
-        self.playerLayerA.contentsScale = isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
-        self.playerLayerB.contentsScale = isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
     }
     return self;
 }
@@ -173,6 +141,41 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [super startAnimation];
     self.isPreparingNextVideo = NO;
 
+    // --- Create Player Infrastructure ---
+    // This is done here to ensure a clean slate every time the screensaver starts.
+    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+
+    self.playerA = [[AVPlayer alloc] init];
+    self.playerB = [[AVPlayer alloc] init];
+    // Force mute all players unconditionally to solve audio issues.
+    self.playerA.muted = YES;
+    self.playerB.muted = YES;
+    self.playerA.preventsDisplaySleepDuringVideoPlayback = NO;
+    self.playerB.preventsDisplaySleepDuringVideoPlayback = NO;
+    self.playerA.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+    self.playerB.actionAtItemEnd = AVPlayerActionAtItemEndNone;
+
+    self.playerLayerA = [AVPlayerLayer playerLayerWithPlayer:self.playerA];
+    self.playerLayerB = [AVPlayerLayer playerLayerWithPlayer:self.playerB];
+
+    self.playerViewA = [[NSView alloc] initWithFrame:self.bounds];
+    self.playerViewA.wantsLayer = YES;
+    self.playerViewA.layer = self.playerLayerA;
+    self.playerViewA.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    self.playerViewB = [[NSView alloc] initWithFrame:self.bounds];
+    self.playerViewB.wantsLayer = YES;
+    self.playerViewB.layer = self.playerLayerB;
+    self.playerViewB.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+
+    NSString *videoGravity = [self videoGravityFromScaling:(VideoScaling)[defaults integerForKey:kVideoScalingKey]];
+    self.playerLayerA.videoGravity = videoGravity;
+    self.playerLayerB.videoGravity = videoGravity;
+
+    self.playerLayerA.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    self.playerLayerB.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    // --- End Player Infrastructure ---
+
     // Ensure at least one player view is visible from the start
     if (!self.playerViewA.superview && !self.playerViewB.superview) {
         [self addSubview:self.playerViewA];
@@ -189,47 +192,65 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 {
     [super stopAnimation];
 
-    // Remove all notification observers first
+    // --- Full Player Teardown ---
+    // This process is critical to prevent memory leaks and audio playing in the background.
+
+    // 1. Pause players to stop all playback immediately.
+    [self.playerA pause];
+    [self.playerB pause];
+    self.playerA.muted = YES;
+    self.playerB.muted = YES;
+
+    // 2. Remove all notification observers associated with this object.
     [[NSNotificationCenter defaultCenter] removeObserver:self];
 
-    // Remove time observer
+    // 3. Remove the boundary time observer if it exists.
     if (self.timeObserverToken) {
-        if (self.activePlayer) {
-            [self.activePlayer removeTimeObserver:self.timeObserverToken];
+        // It's possible the activePlayer is already nil, so check both.
+        AVPlayer *playerForToken = self.activePlayer ?: (self.playerA ?: self.playerB);
+        if (playerForToken) {
+            [playerForToken removeTimeObserver:self.timeObserverToken];
         }
         self.timeObserverToken = nil;
     }
 
-    // Pause and clear players immediately
-    [self.playerA pause];
-    [self.playerB pause];
-
-    // Safely remove all KVO observers
-    for (AVPlayerItem *item in [self.observedItems copy]) {
+    // 4. Safely remove all KVO observers. Iterate over a copy.
+    NSSet<AVPlayerItem *> *itemsToRemove = [self.observedItems copy];
+    for (AVPlayerItem *item in itemsToRemove) {
         @try {
             [item removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
         } @catch (NSException *exception) {
-            // Item was already deallocated or observer wasn't registered
+            // Ignore errors if observer isn't registered.
         }
     }
     [self.observedItems removeAllObjects];
 
-    // Clear player items
+    // 5. Detach player items from players. This is crucial to break retain cycles.
     [self.playerA replaceCurrentItemWithPlayerItem:nil];
     [self.playerB replaceCurrentItemWithPlayerItem:nil];
-    self.playerItemA = nil;
-    self.playerItemB = nil;
 
-    // Remove views from hierarchy
+    // 6. Detach players from layers.
+    self.playerLayerA.player = nil;
+    self.playerLayerB.player = nil;
+
+    // 7. Remove views from the hierarchy.
     [self.playerViewA removeFromSuperview];
     [self.playerViewB removeFromSuperview];
 
-    // Clear references
-    self.activePlayerView = nil;
+    // 8. Nil out all properties to deallocate the objects.
+    self.playerA = nil;
+    self.playerB = nil;
+    self.playerLayerA = nil;
+    self.playerLayerB = nil;
+    self.playerViewA = nil;
+    self.playerViewB = nil;
+    self.playerItemA = nil;
+    self.playerItemB = nil;
     self.activePlayer = nil;
-    self.isPreparingNextVideo = NO;
+    self.activePlayerView = nil;
     self.videoURLs = nil;
     self.videoDurations = nil;
+    self.isPreparingNextVideo = NO;
 }
 
 - (void)animateOneFrame { }
@@ -321,7 +342,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     if (self.activePlayer == self.playerA || self.activePlayer == nil) {
         // Player B is inactive, prepare it.
-        // Remove observer from old item if it exists
+        // ** CRITICAL: Remove observer from the old item BEFORE replacing it to prevent a retain cycle. **
+        if (self.playerItemB) {
+            [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.playerItemB];
+        }
+        // Remove KVO observer from old item if it exists
         if (self.playerItemB && [self.observedItems containsObject:self.playerItemB]) {
             @try {
                 [self.playerItemB removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
@@ -334,7 +359,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         [self.observedItems addObject:self.playerItemB];
     } else {
         // Player A is inactive, prepare it.
-        // Remove observer from old item if it exists
+        // ** CRITICAL: Remove observer from the old item BEFORE replacing it to prevent a retain cycle. **
+        if (self.playerItemA) {
+            [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.playerItemA];
+        }
+        // Remove KVO observer from old item if it exists
         if (self.playerItemA && [self.observedItems containsObject:self.playerItemA]) {
             @try {
                 [self.playerItemA removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
@@ -381,7 +410,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             
             // Configure and start the new player.
             ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-            self.activePlayer.muted = ![defaults boolForKey:kEnableAudioKey];
+            // Force mute all players unconditionally to solve audio issues.
+            self.activePlayer.muted = YES;
+            self.activePlayer.volume = 0.0;
             [self.activePlayer play];
 
             // Set up observers to prepare the *next* video.
@@ -431,14 +462,23 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         return; // Video is shorter than the transition
     }
     
+    // Use a weak reference to self to prevent a retain cycle.
+    // The block can retain self, which retains the player, which retains the block.
     __weak typeof(self) weakSelf = self;
     self.timeObserverToken = [self.activePlayer addBoundaryTimeObserverForTimes:@[[NSValue valueWithCMTime:boundaryTime]] queue:dispatch_get_main_queue() usingBlock:^{
-        // This block will be executed only once.
-        if (weakSelf.timeObserverToken) {
-            [weakSelf.activePlayer removeTimeObserver:weakSelf.timeObserverToken];
-            weakSelf.timeObserverToken = nil;
+        // Create a strong reference to self for the scope of this block.
+        // If self is nil, we don't need to do anything.
+        __strong typeof(weakSelf) strongSelf = weakSelf;
+        if (!strongSelf) {
+            return;
         }
-        [weakSelf prepareNextVideo];
+
+        // This block will be executed only once.
+        if (strongSelf.timeObserverToken) {
+            [strongSelf.activePlayer removeTimeObserver:strongSelf.timeObserverToken];
+            strongSelf.timeObserverToken = nil;
+        }
+        [strongSelf prepareNextVideo];
     }];
 }
 
@@ -849,8 +889,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.enableAudioCheckbox = [[NSButton alloc] init];
     [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
     self.enableAudioCheckbox.title = @"Enable Audio";
-    self.enableAudioCheckbox.target = self;
-    self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
+    self.enableAudioCheckbox.state = NSControlStateValueOff;
+    self.enableAudioCheckbox.enabled = NO;
     self.shuffleCheckbox = [[NSButton alloc] init];
     [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
     self.shuffleCheckbox.title = @"Shuffle Videos";
@@ -865,6 +905,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [playbackStack addArrangedSubview:self.shuffleCheckbox];
     [playbackStack addArrangedSubview:self.loopCheckbox];
     [mainStack addArrangedSubview:playbackStack];
+
+    // --- Volume Slider (Removed) ---
     
     // --- Section Separator ---
     NSBox *separator3 = [[NSBox alloc] init];
@@ -996,6 +1038,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         [self updateDurationLabel];
     }
 
+    // Update volume slider (Removed)
+
     // Reload folder table
     if (self.foldersTableView) {
         [self.foldersTableView reloadData];
@@ -1102,8 +1146,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 - (IBAction)settingCheckboxClicked:(NSButton *)sender {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSString *key = nil;
-    if (sender == self.enableAudioCheckbox) key = kEnableAudioKey;
-    else if (sender == self.shuffleCheckbox) key = kShuffleKey;
+    // Audio checkbox is disabled, so no need to check for it.
+    if (sender == self.shuffleCheckbox) key = kShuffleKey;
     else if (sender == self.loopCheckbox) key = kLoopKey;
     
     if (key) {
