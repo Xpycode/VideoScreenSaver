@@ -23,11 +23,6 @@ Here is a list of potential new features, categorized from highest-impact to sma
     *   **What:** Add a "Search Subfolders" checkbox.
     *   **Why:** If a user selects a main video folder, they might have videos organized into subfolders. This option would allow the screensaver to find and play those videos automatically.
 
-4.  **Show Filename Overlay:**
-    *   **What:** An option to display the name of the currently playing video file, subtly overlaid in a corner of the screen.
-    *   **Why:** This is useful for identifying a video that the user particularly likes.
-    *   **How:** We could add a checkbox and options to control the font size and position of the text.
-
 ### Polishing & User Experience
 
 5.  **Volume Control:**

@@ -712,16 +712,14 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [foldersContentView addSubview:self.emptyStateLabel];
 
     // Add/Remove buttons
-    NSButton *addButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, 10, 32, 32)];
-    [addButton setTitle:@"+"];
+    NSButton *addButton = [NSButton buttonWithTitle:@"+" target:self action:@selector(addFolderClicked:)];
+    addButton.frame = NSMakeRect(10, 10, 32, 32);
     [addButton setBezelStyle:NSBezelStyleRounded];
-    [addButton setTarget:self action:@selector(addFolderClicked:)];
     [foldersContentView addSubview:addButton];
 
-    NSButton *removeButton = [[NSButton alloc] initWithFrame:NSMakeRect(50, 10, 32, 32)];
-    [removeButton setTitle:@"-"];
+    NSButton *removeButton = [NSButton buttonWithTitle:@"-" target:self action:@selector(removeFolderClicked:)];
+    removeButton.frame = NSMakeRect(50, 10, 32, 32);
     [removeButton setBezelStyle:NSBezelStyleRounded];
-    [removeButton setTarget:self action:@selector(removeFolderClicked:)];
     [foldersContentView addSubview:removeButton];
 
     // Recursive scan checkbox
