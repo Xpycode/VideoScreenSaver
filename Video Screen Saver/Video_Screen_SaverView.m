@@ -58,6 +58,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSTableView *foldersTableView;
 @property (strong) NSMutableArray<NSData *> *folderBookmarks;
 @property (strong) NSTextField *emptyStateLabel;
+@property (strong) NSTextField *statsLabel;
 
 // Video playback properties
 @property (strong) NSArray<NSURL *> *videoURLs;
@@ -620,10 +621,40 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     dispatch_group_notify(group, dispatch_get_main_queue(), ^{
         self.videoDurations = [durations copy];
+        [self updateStatsLabels]; // Update stats after durations are loaded
         if (completion) {
             completion();
         }
     });
+}
+
+- (void)updateStatsLabels {
+    if (!self.statsLabel) return;
+
+    NSInteger folderCount = self.folderBookmarks.count;
+    NSInteger videoCount = self.videoURLs.count;
+
+    double totalDurationInSeconds = 0;
+    for (NSValue *durationValue in self.videoDurations.allValues) {
+        totalDurationInSeconds += CMTimeGetSeconds([durationValue CMTimeValue]);
+    }
+
+    NSString *durationString = [self formatDuration:totalDurationInSeconds];
+
+    self.statsLabel.stringValue = [NSString stringWithFormat:@"%ld Folders\n%ld Videos\nTotal Duration: %@",
+                                   (long)folderCount,
+                                   (long)videoCount,
+                                   durationString];
+}
+
+- (NSString *)formatDuration:(double)totalSeconds {
+    if (totalSeconds < 0 || isnan(totalSeconds)) {
+        return @"--:--:--";
+    }
+    int hours = floor(totalSeconds / 3600);
+    int minutes = floor(fmod(totalSeconds, 3600) / 60);
+    int seconds = fmod(totalSeconds, 60);
+    return [NSString stringWithFormat:@"%02d:%02d:%02d", hours, minutes, seconds];
 }
 
 
@@ -645,8 +676,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (480x580)
-    NSRect frame = NSMakeRect(0, 0, 480, 580);
+    // Create window (480x660)
+    NSRect frame = NSMakeRect(0, 0, 480, 660);
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -668,6 +699,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     // Update UI with current values
     [self refreshUIFromDefaults];
+    [self updateStatsLabels]; // Initial update
 
     return self.configSheet;
 }
@@ -731,6 +763,24 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [foldersContentView addSubview:self.recursiveScanCheckbox];
 
     currentY -= foldersBox.frame.size.height + 20;
+
+    // --- Statistics Group ---
+    NSBox *statsBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, currentY - 80, contentWidth, 80)];
+    statsBox.title = @"Statistics";
+    statsBox.boxType = NSBoxPrimary;
+    [contentView addSubview:statsBox];
+    NSView *statsContentView = statsBox.contentView;
+
+    self.statsLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, statsContentView.frame.size.width - 20, 50)];
+    self.statsLabel.stringValue = @"Calculating...";
+    self.statsLabel.alignment = NSTextAlignmentLeft;
+    self.statsLabel.textColor = [NSColor secondaryLabelColor];
+    self.statsLabel.editable = NO;
+    self.statsLabel.bordered = NO;
+    self.statsLabel.drawsBackground = NO;
+    [statsContentView addSubview:self.statsLabel];
+
+    currentY -= statsBox.frame.size.height + 20;
 
     // --- Playback Group ---
     NSBox *playbackBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, currentY - 120, contentWidth, 120)];
