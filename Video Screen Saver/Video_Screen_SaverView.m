@@ -716,20 +716,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     return YES;
 }
 
-- (NSWindow*)configureSheet {
-    // ⚠️ CRITICAL: DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY ⚠️
-    if (self.configSheet) {
-        [self.configSheet orderOut:nil];
-        self.configSheet = nil;
-    }
-
-    // ALWAYS reload from UserDefaults
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
-    self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
-
     // Create window - size will be determined by the stack view's fitting size
-    NSRect frame = NSMakeRect(0, 0, 480, 100); // Initial height is arbitrary
+    NSRect frame = NSMakeRect(0, 0, 480, 480); // Adjusted initial height
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -753,7 +741,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     // --- Main Vertical StackView ---
     NSStackView *mainStack = [NSStackView new];
     mainStack.orientation = NSUserInterfaceLayoutOrientationVertical;
-    mainStack.spacing = 12; // Spacing between sections
+    mainStack.spacing = 8; // Reduced spacing between items
     mainStack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
     mainStack.translatesAutoresizingMaskIntoConstraints = NO;
     [contentView addSubview:mainStack];
@@ -798,27 +786,49 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     [folderControlsStack addView:[NSView new] inGravity:NSStackViewGravityCenter]; // Spacer
 
-    self.recursiveScanCheckbox = [NSButton buttonWithSwitchWithTitle:@"Search Subfolders" target:self action:@selector(recursiveScanCheckboxClicked:)];
+    self.recursiveScanCheckbox = [[NSButton alloc] init];
+    [self.recursiveScanCheckbox setButtonType:NSButtonTypeSwitch];
+    self.recursiveScanCheckbox.title = @"Search Subfolders";
+    self.recursiveScanCheckbox.target = self;
+    self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
     [folderControlsStack addArrangedSubview:self.recursiveScanCheckbox];
     [mainStack addArrangedSubview:folderControlsStack];
+    
+    [mainStack addArrangedSubview:[NSBox boxWithTitle:@"" boxType:NSBoxSeparator]];
 
     // --- Statistics ---
     self.statsLabel = [NSTextField labelWithString:@"Calculating..."];
     self.statsLabel.alignment = NSTextAlignmentLeft;
     self.statsLabel.textColor = [NSColor secondaryLabelColor];
     [mainStack addArrangedSubview:self.statsLabel];
+    
+    [mainStack addArrangedSubview:[NSBox boxWithTitle:@"" boxType:NSBoxSeparator]];
 
     // --- Playback Row ---
     NSStackView *playbackStack = [NSStackView new];
     playbackStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     playbackStack.distribution = NSStackViewDistributionFillEqually;
-    self.enableAudioCheckbox = [NSButton buttonWithSwitchWithTitle:@"Enable Audio" target:self action:@selector(settingCheckboxClicked:)];
-    self.shuffleCheckbox = [NSButton buttonWithSwitchWithTitle:@"Shuffle Videos" target:self action:@selector(settingCheckboxClicked:)];
-    self.loopCheckbox = [NSButton buttonWithSwitchWithTitle:@"Loop Playlist" target:self action:@selector(settingCheckboxClicked:)];
+    self.enableAudioCheckbox = [[NSButton alloc] init];
+    [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
+    self.enableAudioCheckbox.title = @"Enable Audio";
+    self.enableAudioCheckbox.target = self;
+    self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
+    self.shuffleCheckbox = [[NSButton alloc] init];
+    [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
+    self.shuffleCheckbox.title = @"Shuffle Videos";
+    self.shuffleCheckbox.target = self;
+    self.shuffleCheckbox.action = @selector(settingCheckboxClicked:);
+    self.loopCheckbox = [[NSButton alloc] init];
+    [self.loopCheckbox setButtonType:NSButtonTypeSwitch];
+    self.loopCheckbox.title = @"Loop Playlist";
+    self.loopCheckbox.target = self;
+    self.loopCheckbox.action = @selector(settingCheckboxClicked:);
     [playbackStack addArrangedSubview:self.enableAudioCheckbox];
     [playbackStack addArrangedSubview:self.shuffleCheckbox];
     [playbackStack addArrangedSubview:self.loopCheckbox];
     [mainStack addArrangedSubview:playbackStack];
+    
+    [mainStack addArrangedSubview:[NSBox boxWithTitle:@"" boxType:NSBoxSeparator]];
 
     // --- Display Rows ---
     self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
@@ -856,15 +866,16 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [mainStack addArrangedSubview:okButtonStack];
 
     // --- Finalize Layout ---
-    [NSLayoutConstraint activateConstraints:@[[
-        mainStack.topAnchor constraintEqualToAnchor:contentView.topAnchor],
+    [NSLayoutConstraint activateConstraints:@[
+        [mainStack.topAnchor constraintEqualToAnchor:contentView.topAnchor],
         [mainStack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
         [mainStack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
         [mainStack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor]
     ]];
 
     // Adjust window size to fit content
-    NSRect newFrame = [self.configSheet frameRectForContentRect:mainStack.fittingSize];
+    NSRect contentRect = NSMakeRect(0, 0, mainStack.fittingSize.width, mainStack.fittingSize.height);
+    NSRect newFrame = [self.configSheet frameRectForContentRect:contentRect];
     [self.configSheet setFrame:newFrame display:YES];
 }
 
