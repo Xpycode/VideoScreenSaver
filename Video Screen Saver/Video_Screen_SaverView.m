@@ -729,8 +729,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (480x460) - New compact layout
-    NSRect frame = NSMakeRect(0, 0, 480, 460);
+    // Create window (480x420) - Final compact layout
+    NSRect frame = NSMakeRect(0, 0, 480, 420);
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -760,7 +760,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 #pragma mark - UI Setup
 
 - (void)setupSinglePaneUI:(NSView *)contentView {
-    CGFloat currentY = contentView.frame.size.height - 30;
+    CGFloat currentY = contentView.frame.size.height - 20;
     CGFloat contentWidth = contentView.frame.size.width - 40;
     CGFloat leftMargin = 20;
 
@@ -772,7 +772,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     self.foldersTableView = [[NSTableView alloc] initWithFrame:foldersScrollView.bounds];
     NSTableColumn *folderColumn = [[NSTableColumn alloc] initWithIdentifier:@"folder"];
-    folderColumn.width = foldersScrollView.frame.size.width - 4; // Account for scroller
+    folderColumn.width = foldersScrollView.frame.size.width - 4;
     [self.foldersTableView addTableColumn:folderColumn];
     self.foldersTableView.headerView = nil;
     self.foldersTableView.delegate = self;
@@ -780,7 +780,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     foldersScrollView.documentView = self.foldersTableView;
     [contentView addSubview:foldersScrollView];
 
-    // Empty state label
     self.emptyStateLabel = [[NSTextField alloc] initWithFrame:foldersScrollView.frame];
     self.emptyStateLabel.stringValue = @"No video folders configured.\nClick + to add one.";
     self.emptyStateLabel.alignment = NSTextAlignmentCenter;
@@ -792,7 +791,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     currentY -= tableHeight + 10;
 
-    // Add/Remove buttons
+    // --- Folder Controls ---
     NSButton *addButton = [NSButton buttonWithTitle:@"+" target:self action:@selector(addFolderClicked:)];
     addButton.frame = NSMakeRect(leftMargin, currentY, 32, 32);
     [addButton setBezelStyle:NSBezelStyleRounded];
@@ -803,7 +802,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [removeButton setBezelStyle:NSBezelStyleRounded];
     [contentView addSubview:removeButton];
 
-    // Recursive scan checkbox
     self.recursiveScanCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(contentWidth - 155, currentY + 5, 170, 24)];
     [self.recursiveScanCheckbox setButtonType:NSButtonTypeSwitch];
     self.recursiveScanCheckbox.title = @"Search Subfolders";
@@ -811,13 +809,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
     [contentView addSubview:self.recursiveScanCheckbox];
 
-    currentY -= 35;
-
-    // --- Separator ---
-    NSBox *separator1 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 1)];
-    separator1.boxType = NSBoxSeparator;
-    [contentView addSubview:separator1];
-    currentY -= 5;
+    currentY -= 32 + 5; // Control height + padding
 
     // --- Statistics ---
     self.statsLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 40, contentWidth, 40)];
@@ -828,13 +820,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.statsLabel.bordered = NO;
     self.statsLabel.drawsBackground = NO;
     [contentView addSubview:self.statsLabel];
-    currentY -= 45;
-
-    // --- Separator ---
-    NSBox *separator2 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 1)];
-    separator2.boxType = NSBoxSeparator;
-    [contentView addSubview:separator2];
-    currentY -= 5;
+    currentY -= 40 + 5; // Control height + padding
 
     // --- Playback ---
     self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 120, 24)];
@@ -858,13 +844,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.loopCheckbox.action = @selector(settingCheckboxClicked:);
     [contentView addSubview:self.loopCheckbox];
 
-    currentY -= 35;
-
-    // --- Separator ---
-    NSBox *separator3 = [[NSBox alloc] initWithFrame:NSMakeRect(leftMargin, currentY, contentWidth, 1)];
-    separator3.boxType = NSBoxSeparator;
-    [contentView addSubview:separator3];
-    currentY -= 5;
+    currentY -= 24 + 5; // Control height + padding
 
     // --- Display ---
     NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
@@ -900,7 +880,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
     self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
-    self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
+    self.durationSlider.target = self;
+    self.durationSlider.action = @selector(sliderValueChanged:);
     [contentView addSubview:self.durationSlider];
 
     self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + 310, currentY - 24, 100, 24)];
@@ -986,6 +967,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                         [self saveFolderBookmarks];
                         [self.foldersTableView reloadData];
                         self.emptyStateLabel.hidden = YES;
+                        [self updateStatsLabels]; // Update stats
 
                         // Reload videos if in preview
                         if (self.isPreview) {
@@ -1023,6 +1005,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [self saveFolderBookmarks];
             [self.foldersTableView reloadData];
             self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
+            [self updateStatsLabels]; // Update stats
 
             // If screensaver is currently running, reload the playlist immediately
             // Otherwise, it will pick up the new folder list on next start
@@ -1063,6 +1046,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     BOOL isEnabled = (sender.state == NSControlStateValueOn);
     [defaults setBool:isEnabled forKey:kRecursiveScanKey];
     [defaults synchronize];
+    [self updateStatsLabels]; // Update stats
 
     // Reload playlist if screensaver is running to apply the change immediately
     if (self.videoURLs && self.videoURLs.count > 0) {
