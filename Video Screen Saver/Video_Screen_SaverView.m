@@ -54,12 +54,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSPopUpButton *scalingPopUpButton;
 @property (strong) NSButton *recursiveScanCheckbox;
 
-// Two-pane UI Properties
-@property (strong) NSTableView *categoryTableView;
+// Single-pane UI Properties
 @property (strong) NSTableView *foldersTableView;
 @property (strong) NSMutableArray<NSData *> *folderBookmarks;
 @property (strong) NSTextField *emptyStateLabel;
-@property (strong) NSView *rightPaneView;
 
 // Video playback properties
 @property (strong) NSArray<NSURL *> *videoURLs;
@@ -637,23 +635,18 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 - (NSWindow*)configureSheet {
     // ⚠️ CRITICAL: DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY ⚠️
     // This method MUST create a fresh window every time to avoid intermittent modal sheet failures.
-    // Reusing the window causes the sheet to stop appearing after working for a while.
-    // The pattern of checking for existing window, ordering it out, and nilifying is intentional.
-
-    // Always create fresh - don't reuse old window
     if (self.configSheet) {
         [self.configSheet orderOut:nil];
         self.configSheet = nil;
     }
 
     // ALWAYS reload from UserDefaults to ensure we have the latest data
-    // System Settings creates multiple instances of ScreenSaverView, so we can't rely on cached data
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (600x400) - resized after removing filename options
-    NSRect frame = NSMakeRect(0, 0, 600, 400);
+    // Create window (480x580)
+    NSRect frame = NSMakeRect(0, 0, 480, 580);
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -661,28 +654,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.configSheet.title = @"Video Screen Saver Settings";
     NSView *contentView = self.configSheet.contentView;
 
-    // Left pane - Category list (150x310, 20px margins) - resized
-    NSScrollView *categoryScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(20, 70, 150, 310)];
-    categoryScrollView.hasVerticalScroller = YES;
-    categoryScrollView.borderType = NSBezelBorder;
-
-    self.categoryTableView = [[NSTableView alloc] initWithFrame:categoryScrollView.bounds];
-    NSTableColumn *categoryColumn = [[NSTableColumn alloc] initWithIdentifier:@"category"];
-    categoryColumn.width = 148;
-    [self.categoryTableView addTableColumn:categoryColumn];
-    self.categoryTableView.headerView = nil;
-    self.categoryTableView.delegate = self;
-    self.categoryTableView.dataSource = self;
-    self.categoryTableView.intercellSpacing = NSMakeSize(0, 5); // Add 5px vertical padding
-    categoryScrollView.documentView = self.categoryTableView;
-    [contentView addSubview:categoryScrollView];
-
-    // Right pane container (390x310) - resized
-    self.rightPaneView = [[NSView alloc] initWithFrame:NSMakeRect(190, 70, 390, 310)];
-    [contentView addSubview:self.rightPaneView];
+    // Setup all UI elements in a single pane
+    [self setupSinglePaneUI:contentView];
 
     // OK button
-    NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(500, 20, 80, 32)];
+    NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(frame.size.width - 90, 20, 80, 32)];
     okButton.title = @"OK";
     okButton.bezelStyle = NSBezelStyleRounded;
     okButton.keyEquivalent = @"\r";
@@ -690,177 +666,146 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     okButton.action = @selector(closeConfigSheet:);
     [contentView addSubview:okButton];
 
-    // Select Source Folders by default
-    [self.categoryTableView selectRowIndexes:[NSIndexSet indexSetWithIndex:0] byExtendingSelection:NO];
-    [self setupSourceFoldersPane];
-
     // Update UI with current values
     [self refreshUIFromDefaults];
 
     return self.configSheet;
 }
 
-#pragma mark - Pane Setup Methods
+#pragma mark - UI Setup
 
-- (void)setupSourceFoldersPane {
-    // Clear right pane
-    for (NSView *subview in self.rightPaneView.subviews) {
-        [subview removeFromSuperview];
-    }
+- (void)setupSinglePaneUI:(NSView *)contentView {
+    CGFloat currentY = contentView.frame.size.height - 20;
+    CGFloat contentWidth = contentView.frame.size.width - 40;
 
-    // Folders table view (full width, leave 50px at bottom for buttons) - use resized height
-    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 50, 390, 260)];
+    // --- Source Folders Group ---
+    NSBox *foldersBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, currentY - 220, contentWidth, 220)];
+    foldersBox.title = @"Source Folders";
+    foldersBox.boxType = NSBoxPrimary;
+    [contentView addSubview:foldersBox];
+    NSView *foldersContentView = foldersBox.contentView;
+
+    // Folders table view (Height for ~5 rows: 5 * 22 = 110)
+    CGFloat tableHeight = 115;
+    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(10, 50, foldersContentView.frame.size.width - 20, tableHeight)];
     foldersScrollView.hasVerticalScroller = YES;
     foldersScrollView.borderType = NSBezelBorder;
 
     self.foldersTableView = [[NSTableView alloc] initWithFrame:foldersScrollView.bounds];
     NSTableColumn *folderColumn = [[NSTableColumn alloc] initWithIdentifier:@"folder"];
-    folderColumn.title = @"Video Folders";
-    folderColumn.width = 370;
+    folderColumn.width = foldersScrollView.frame.size.width - 4; // Account for scroller
     [self.foldersTableView addTableColumn:folderColumn];
+    self.foldersTableView.headerView = nil;
     self.foldersTableView.delegate = self;
     self.foldersTableView.dataSource = self;
     foldersScrollView.documentView = self.foldersTableView;
-    [self.rightPaneView addSubview:foldersScrollView];
+    [foldersContentView addSubview:foldersScrollView];
 
-    // Empty state label (hidden when folders exist)
-    self.emptyStateLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 100, 390, 60)];
-    self.emptyStateLabel.stringValue = @"No video folders configured.\n\nClick + to add a video folder";
+    // Empty state label
+    self.emptyStateLabel = [[NSTextField alloc] initWithFrame:foldersScrollView.frame];
+    self.emptyStateLabel.stringValue = @"No video folders configured.\nClick + to add one.";
     self.emptyStateLabel.alignment = NSTextAlignmentCenter;
     self.emptyStateLabel.textColor = [NSColor secondaryLabelColor];
     self.emptyStateLabel.editable = NO;
     self.emptyStateLabel.bordered = NO;
     self.emptyStateLabel.backgroundColor = [NSColor clearColor];
-    self.emptyStateLabel.font = [NSFont systemFontOfSize:13];
-    self.emptyStateLabel.hidden = (self.folderBookmarks.count > 0);
-    [self.rightPaneView addSubview:self.emptyStateLabel];
+    [foldersContentView addSubview:self.emptyStateLabel];
 
-    // Add folder button (+)
-    NSButton *addButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, 10, 32, 32)];
+    // Add/Remove buttons
+    NSButton *addButton = [[NSButton alloc] initWithFrame:NSMakeRect(10, 10, 32, 32)];
     [addButton setTitle:@"+"];
-    [addButton setButtonType:NSButtonTypeMomentaryPushIn];
     [addButton setBezelStyle:NSBezelStyleRounded];
-    [addButton setTarget:self];
-    [addButton setAction:@selector(addFolderClicked:)];
-    [addButton setFont:[NSFont systemFontOfSize:18]];
-    [self.rightPaneView addSubview:addButton];
+    [addButton setTarget:self action:@selector(addFolderClicked:)];
+    [foldersContentView addSubview:addButton];
 
-    // Remove folder button (-)
-    NSButton *removeButton = [[NSButton alloc] initWithFrame:NSMakeRect(40, 10, 32, 32)];
+    NSButton *removeButton = [[NSButton alloc] initWithFrame:NSMakeRect(50, 10, 32, 32)];
     [removeButton setTitle:@"-"];
-    [removeButton setButtonType:NSButtonTypeMomentaryPushIn];
     [removeButton setBezelStyle:NSBezelStyleRounded];
-    [removeButton setTarget:self];
-    [removeButton setAction:@selector(removeFolderClicked:)];
-    [removeButton setFont:[NSFont systemFontOfSize:18]];
-    [self.rightPaneView addSubview:removeButton];
+    [removeButton setTarget:self action:@selector(removeFolderClicked:)];
+    [foldersContentView addSubview:removeButton];
 
-    // Search Subfolders checkbox (positioned on the right side)
-    self.recursiveScanCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(200, 10, 190, 24)];
+    // Recursive scan checkbox
+    self.recursiveScanCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(foldersContentView.frame.size.width - 180, 15, 170, 24)];
     [self.recursiveScanCheckbox setButtonType:NSButtonTypeSwitch];
     self.recursiveScanCheckbox.title = @"Search Subfolders";
     self.recursiveScanCheckbox.target = self;
     self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
-    [self.rightPaneView addSubview:self.recursiveScanCheckbox];
-}
+    [foldersContentView addSubview:self.recursiveScanCheckbox];
 
-- (void)setupPlaybackPane {
-    // Clear right pane
-    for (NSView *subview in self.rightPaneView.subviews) {
-        [subview removeFromSuperview];
-    }
+    currentY -= foldersBox.frame.size.height + 20;
 
-    int yPos = 270; // Start near top of 310px pane
+    // --- Playback Group ---
+    NSBox *playbackBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, currentY - 120, contentWidth, 120)];
+    playbackBox.title = @"Playback";
+    playbackBox.boxType = NSBoxPrimary;
+    [contentView addSubview:playbackBox];
+    NSView *playbackContentView = playbackBox.contentView;
 
-    // Enable Audio checkbox
-    self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(10, 70, 200, 24)];
     [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
     self.enableAudioCheckbox.title = @"Enable Audio";
     self.enableAudioCheckbox.target = self;
     self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
-    [self.rightPaneView addSubview:self.enableAudioCheckbox];
+    [playbackContentView addSubview:self.enableAudioCheckbox];
 
-    yPos -= 40;
-
-    // Shuffle Videos checkbox
-    self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(10, 40, 200, 24)];
     [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
     self.shuffleCheckbox.title = @"Shuffle Videos";
     self.shuffleCheckbox.target = self;
     self.shuffleCheckbox.action = @selector(settingCheckboxClicked:);
-    [self.rightPaneView addSubview:self.shuffleCheckbox];
+    [playbackContentView addSubview:self.shuffleCheckbox];
 
-    yPos -= 40;
-
-    // Loop Playlist checkbox
-    self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(20, yPos, 200, 24)];
+    self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(10, 10, 200, 24)];
     [self.loopCheckbox setButtonType:NSButtonTypeSwitch];
     self.loopCheckbox.title = @"Loop Playlist";
     self.loopCheckbox.target = self;
     self.loopCheckbox.action = @selector(settingCheckboxClicked:);
-    [self.rightPaneView addSubview:self.loopCheckbox];
-}
+    [playbackContentView addSubview:self.loopCheckbox];
 
-- (void)setupDisplayPane {
-    // Clear right pane
-    for (NSView *subview in self.rightPaneView.subviews) {
-        [subview removeFromSuperview];
-    }
+    currentY -= playbackBox.frame.size.height + 20;
 
-    int yPos = 270; // Start near top of 310px pane
+    // --- Display Group ---
+    NSBox *displayBox = [[NSBox alloc] initWithFrame:NSMakeRect(20, currentY - 120, contentWidth, 120)];
+    displayBox.title = @"Display";
+    displayBox.boxType = NSBoxPrimary;
+    [contentView addSubview:displayBox];
+    NSView *displayContentView = displayBox.contentView;
 
-    // Video Scaling label and popup
-    NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
+    NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 70, 100, 24)];
     scalingLabel.stringValue = @"Video Scaling:";
-    scalingLabel.editable = NO;
-    scalingLabel.bezeled = NO;
-    scalingLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:scalingLabel];
+    scalingLabel.editable = NO; scalingLabel.bezeled = NO; scalingLabel.drawsBackground = NO;
+    [displayContentView addSubview:scalingLabel];
 
-    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
+    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(110, 70, 200, 24)];
     [self.scalingPopUpButton addItemsWithTitles:@[@"Fill Screen", @"Fit to Screen", @"Stretch"]];
     self.scalingPopUpButton.target = self;
     self.scalingPopUpButton.action = @selector(scalingChanged:);
-    [self.rightPaneView addSubview:self.scalingPopUpButton];
+    [displayContentView addSubview:self.scalingPopUpButton];
 
-    yPos -= 40;
-
-    // Transition label and popup
-    NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos, 100, 24)];
+    NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 40, 100, 24)];
     transitionLabel.stringValue = @"Transition:";
-    transitionLabel.editable = NO;
-    transitionLabel.bezeled = NO;
-    transitionLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:transitionLabel];
+    transitionLabel.editable = NO; transitionLabel.bezeled = NO; transitionLabel.drawsBackground = NO;
+    [displayContentView addSubview:transitionLabel];
 
-    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(120, yPos, 200, 24)];
+    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(110, 40, 200, 24)];
     [self.transitionPopUpButton addItemsWithTitles:@[@"None", @"Fade", @"Cross Dissolve"]];
     self.transitionPopUpButton.target = self;
     self.transitionPopUpButton.action = @selector(transitionChanged:);
-    [self.rightPaneView addSubview:self.transitionPopUpButton];
+    [displayContentView addSubview:self.transitionPopUpButton];
 
-    yPos -= 40;
-
-    // Duration label and slider
-    NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(20, yPos + 10, 100, 24)];
+    NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, 100, 24)];
     durationTitleLabel.stringValue = @"Duration:";
-    durationTitleLabel.editable = NO;
-    durationTitleLabel.bezeled = NO;
-    durationTitleLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:durationTitleLabel];
+    durationTitleLabel.editable = NO; durationTitleLabel.bezeled = NO; durationTitleLabel.drawsBackground = NO;
+    [displayContentView addSubview:durationTitleLabel];
 
-    self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(120, yPos + 10, 100, 24)];
-    self.durationLabel.editable = NO;
-    self.durationLabel.bezeled = NO;
-    self.durationLabel.drawsBackground = NO;
-    [self.rightPaneView addSubview:self.durationLabel];
+    self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(110, 10, 200, 24)];
+    self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
+    self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
+    [displayContentView addSubview:self.durationSlider];
 
-    self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(20, yPos - 15, 300, 24)];
-    self.durationSlider.minValue = 0.5;
-    self.durationSlider.maxValue = 5.0;
-    self.durationSlider.target = self;
-    self.durationSlider.action = @selector(sliderValueChanged:);
-    [self.rightPaneView addSubview:self.durationSlider];
+    self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(320, 10, 100, 24)];
+    self.durationLabel.editable = NO; self.durationLabel.bezeled = NO; self.durationLabel.drawsBackground = NO;
+    [displayContentView addSubview:self.durationLabel];
 }
 
 - (void)refreshUIFromDefaults {
@@ -1047,72 +992,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.durationLabel.stringValue = [NSString stringWithFormat:@"%.1f s", self.durationSlider.doubleValue];
 }
 
-- (void)updateFilenameFontSizeLabel {
-    self.filenameFontSizeLabel.stringValue = [NSString stringWithFormat:@"%.0f pt", self.filenameFontSizeSlider.doubleValue];
-}
-
-- (IBAction)showFilenameCheckboxClicked:(NSButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    BOOL isEnabled = (sender.state == NSControlStateValueOn);
-    [defaults setBool:isEnabled forKey:kShowFilenameKey];
-    [defaults synchronize];
-
-    // Update the overlay immediately
-    [self updateFilenameOverlay];
-}
-
-- (IBAction)filenamePositionChanged:(NSPopUpButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    [defaults setInteger:sender.indexOfSelectedItem forKey:kFilenamePositionKey];
-    [defaults synchronize];
-
-    // Update the overlay immediately
-    [self updateFilenameOverlay];
-}
-
-- (IBAction)filenameFontSizeChanged:(NSSlider *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    [defaults setDouble:sender.doubleValue forKey:kFilenameFontSizeKey];
-    [defaults synchronize];
-    [self updateFilenameFontSizeLabel];
-
-    // Update the overlay immediately
-    [self updateFilenameOverlay];
-}
-
-- (IBAction)filenameFontTypeChanged:(NSPopUpButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    [defaults setInteger:sender.indexOfSelectedItem forKey:kFilenameFontTypeKey];
-    [defaults synchronize];
-
-    // Update the overlay immediately
-    [self updateFilenameOverlay];
-}
-
-- (IBAction)filenameOpacityChanged:(NSSlider *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    [defaults setDouble:sender.doubleValue forKey:kFilenameOpacityKey];
-    [defaults synchronize];
-    [self updateFilenameOpacityLabel];
-
-    // Update the overlay immediately
-    [self updateFilenameOverlay];
-}
-
-- (void)updateFilenameOpacityLabel {
-    self.filenameOpacityLabel.stringValue = [NSString stringWithFormat:@"%.0f%%", self.filenameOpacitySlider.doubleValue * 100];
-}
-
-- (IBAction)filenameGlassEffectCheckboxClicked:(NSButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    BOOL isEnabled = (sender.state == NSControlStateValueOn);
-    [defaults setBool:isEnabled forKey:kFilenameGlassEffectKey];
-    [defaults synchronize];
-
-    // Update the overlay immediately
-    [self updateFilenameOverlay];
-}
-
 - (IBAction)closeConfigSheet:(id)sender {
     NSWindow *sheet = self.configSheet;
 
@@ -1130,139 +1009,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     // Clear references AFTER dismissing
     self.configSheet = nil;
     self.folderBookmarks = nil;  // Reset so it reloads from UserDefaults next time
-}
-
-#pragma mark - Filename Overlay Methods
-
-- (void)updateFilenameOverlay {
-    // Called when settings change (without video URL)
-    if (self.currentVideoIndex >= 0 && self.currentVideoIndex < self.videoURLs.count) {
-        NSURL *currentURL = self.videoURLs[self.currentVideoIndex];
-        [self updateFilenameOverlayForVideo:currentURL];
-    }
-}
-
-- (void)updateFilenameOverlayForVideo:(NSURL *)videoURL {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-    BOOL showFilename = [defaults boolForKey:kShowFilenameKey];
-
-    // Remove existing overlays if present
-    if (self.filenameOverlayLayer) {
-        [self.filenameOverlayLayer removeFromSuperlayer];
-        self.filenameOverlayLayer = nil;
-    }
-    if (self.filenameOverlayView) {
-        [self.filenameOverlayView removeFromSuperview];
-        self.filenameOverlayView = nil;
-    }
-
-    // Don't create overlay if disabled
-    if (!showFilename || !videoURL) {
-        return;
-    }
-
-    // Get settings
-    CGFloat fontSize = [defaults doubleForKey:kFilenameFontSizeKey];
-    FilenameFontType fontType = (FilenameFontType)[defaults integerForKey:kFilenameFontTypeKey];
-    CGFloat opacity = [defaults doubleForKey:kFilenameOpacityKey];
-    BOOL glassEffect = [defaults boolForKey:kFilenameGlassEffectKey];
-    NSString *filename = videoURL.lastPathComponent.stringByDeletingPathExtension;
-
-    // Select font based on type
-    NSFont *font;
-    switch (fontType) {
-        case FilenameFontTypeMonospaced:
-            font = [NSFont monospacedSystemFontOfSize:fontSize weight:NSFontWeightRegular];
-            break;
-        case FilenameFontTypeSerif:
-            font = [NSFont fontWithName:@"Times New Roman" size:fontSize] ?: [NSFont systemFontOfSize:fontSize];
-            break;
-        case FilenameFontTypeSystem:
-        default:
-            font = [NSFont systemFontOfSize:fontSize];
-            break;
-    }
-
-    // Create text layer for filename
-    self.filenameOverlayLayer = [CATextLayer layer];
-    self.filenameOverlayLayer.string = filename;
-    self.filenameOverlayLayer.fontSize = fontSize;
-    self.filenameOverlayLayer.font = (__bridge CFTypeRef)font;
-    self.filenameOverlayLayer.foregroundColor = [[NSColor whiteColor] CGColor];
-    self.filenameOverlayLayer.opacity = opacity;
-
-    // Add shadow for better visibility
-    self.filenameOverlayLayer.shadowColor = [[NSColor blackColor] CGColor];
-    self.filenameOverlayLayer.shadowOpacity = 0.8;
-    self.filenameOverlayLayer.shadowOffset = CGSizeMake(2, -2);
-    self.filenameOverlayLayer.shadowRadius = 4.0;
-
-    // Calculate size
-    NSDictionary *attributes = @{NSFontAttributeName: font};
-    CGSize textSize = [filename sizeWithAttributes:attributes];
-    CGFloat padding = 20.0;
-    CGFloat width = textSize.width + (padding * 2);
-    CGFloat height = textSize.height + (padding * 2);
-
-    // Position based on user preference
-    FilenamePosition position = (FilenamePosition)[defaults integerForKey:kFilenamePositionKey];
-    CGRect bounds = self.bounds;
-    CGFloat xPos, yPos;
-
-    switch (position) {
-        case FilenamePositionBottomLeft:
-            xPos = padding;
-            yPos = padding;
-            break;
-        case FilenamePositionBottomRight:
-            xPos = bounds.size.width - width - padding;
-            yPos = padding;
-            break;
-        case FilenamePositionTopLeft:
-            xPos = padding;
-            yPos = bounds.size.height - height - padding;
-            break;
-        case FilenamePositionTopRight:
-            xPos = bounds.size.width - width - padding;
-            yPos = bounds.size.height - height - padding;
-            break;
-    }
-
-    self.filenameOverlayLayer.frame = CGRectMake(xPos, yPos, width, height);
-    self.filenameOverlayLayer.contentsScale = [[NSScreen mainScreen] backingScaleFactor];
-
-    // Apply glass effect if enabled (use NSVisualEffectView like macOS time/date)
-    if (glassEffect) {
-        // Create NSVisualEffectView. Its frame defines the area where the text can appear.
-        NSVisualEffectView *effectView = [[NSVisualEffectView alloc] initWithFrame:CGRectMake(xPos, yPos, width, height)];
-        effectView.material = NSVisualEffectMaterialContentBackground;
-        effectView.state = NSVisualEffectStateActive;
-        effectView.blendingMode = NSVisualEffectBlendingModeWithinWindow;
-        effectView.wantsLayer = YES; // A layer is required to apply a mask.
-
-        // Create a text field that will be used as a mask.
-        // Its frame should match the effect view's bounds to allow for centered alignment.
-        NSTextField *maskLabel = [[NSTextField alloc] initWithFrame:effectView.bounds];
-        maskLabel.stringValue = filename;
-        maskLabel.font = font;
-        maskLabel.textColor = [NSColor whiteColor]; // For a mask, only alpha matters.
-        maskLabel.alignment = NSTextAlignmentCenter;
-        maskLabel.editable = NO;
-        maskLabel.bordered = NO;
-        maskLabel.drawsBackground = NO;
-
-        // Set the text field's layer as the mask for the effect view's layer.
-        // The effect view will only be visible where the text is, creating "glass text".
-        effectView.layer.mask = maskLabel.layer;
-        effectView.alphaValue = opacity; // Apply opacity to the whole effect.
-
-        self.filenameOverlayView = effectView;
-        [self addSubview:self.filenameOverlayView];
-    } else {
-        // Standard CATextLayer without glass effect
-        // Add to layer hierarchy on top of everything
-        [self.layer addSublayer:self.filenameOverlayLayer];
-    }
 }
 
 #pragma mark - Helper Methods
@@ -1300,49 +1046,23 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 #pragma mark - NSTableView DataSource
 
 - (NSInteger)numberOfRowsInTableView:(NSTableView *)tableView {
-    if (tableView == self.categoryTableView) {
-        return 3; // Source Folders, Playback, Display
-    } else if (tableView == self.foldersTableView) {
-        return self.folderBookmarks.count;
-    }
-    return 0;
+    return self.folderBookmarks.count;
 }
 
 - (id)tableView:(NSTableView *)tableView objectValueForTableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row {
-    if (tableView == self.categoryTableView) {
-        NSArray *categories = @[@"Source Folders", @"Playback", @"Display"];
-        return categories[row];
-    } else if (tableView == self.foldersTableView) {
-        NSData *bookmarkData = self.folderBookmarks[row];
-        NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData
-                                                     options:0
-                                               relativeToURL:nil
-                                         bookmarkDataIsStale:NULL
-                                                       error:NULL];
-        return folderURL.lastPathComponent ?: @"Unknown Folder";
-    }
-    return nil;
+    NSData *bookmarkData = self.folderBookmarks[row];
+    NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData
+                                                 options:0
+                                           relativeToURL:nil
+                                     bookmarkDataIsStale:NULL
+                                                   error:NULL];
+    return folderURL.lastPathComponent ?: @"Unknown Folder";
 }
 
 #pragma mark - NSTableView Delegate
 
-- (void)tableViewSelectionDidChange:(NSNotification *)notification {
-    NSTableView *tableView = notification.object;
-    if (tableView == self.categoryTableView) {
-        NSInteger selectedRow = tableView.selectedRow;
-        if (selectedRow == 0) {
-            [self setupSourceFoldersPane];
-        } else if (selectedRow == 1) {
-            [self setupPlaybackPane];
-        } else if (selectedRow == 2) {
-            [self setupDisplayPane];
-        }
-        [self refreshUIFromDefaults];
-    }
-}
-
 - (NSString *)tableView:(NSTableView *)tableView toolTipForCell:(NSCell *)cell rect:(NSRectPointer)rect tableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row mouseLocation:(NSPoint)mouseLocation {
-    if (tableView == self.foldersTableView && row < self.folderBookmarks.count) {
+    if (row < self.folderBookmarks.count) {
         NSData *bookmarkData = self.folderBookmarks[row];
         NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkData
                                                      options:0
