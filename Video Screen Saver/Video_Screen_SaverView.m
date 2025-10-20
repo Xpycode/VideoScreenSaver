@@ -105,14 +105,12 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
         ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
         [defaults registerDefaults:@{
-            kEnableAudioKey: @YES,
             kShuffleKey: @NO,
             kLoopKey: @YES,
             kTransitionTypeKey: @(TransitionTypeCrossDissolve),
             kTransitionDurationKey: @1.5,
             kVideoScalingKey: @(VideoScalingFill),
-            kRecursiveScanKey: @NO,
-            kVolumeKey: @0.75
+            kRecursiveScanKey: @NO
         }];
     }
     return self;
@@ -1010,9 +1008,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
 
     // Update checkboxes if they exist
-    if (self.enableAudioCheckbox) {
-        self.enableAudioCheckbox.state = [defaults boolForKey:kEnableAudioKey] ? NSControlStateValueOn : NSControlStateValueOff;
-    }
     if (self.shuffleCheckbox) {
         self.shuffleCheckbox.state = [defaults boolForKey:kShuffleKey] ? NSControlStateValueOn : NSControlStateValueOff;
     }
