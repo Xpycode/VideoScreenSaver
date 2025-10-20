@@ -718,19 +718,18 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 - (NSWindow*)configureSheet {
     // ⚠️ CRITICAL: DO NOT MODIFY THIS PATTERN UNLESS ABSOLUTELY NECESSARY ⚠️
-    // This method MUST create a fresh window every time to avoid intermittent modal sheet failures.
     if (self.configSheet) {
         [self.configSheet orderOut:nil];
         self.configSheet = nil;
     }
 
-    // ALWAYS reload from UserDefaults to ensure we have the latest data
+    // ALWAYS reload from UserDefaults
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
-    // Create window (480x420) - Final compact layout
-    NSRect frame = NSMakeRect(0, 0, 480, 420);
+    // Create window - size will be determined by the stack view's fitting size
+    NSRect frame = NSMakeRect(0, 0, 480, 100); // Initial height is arbitrary
     self.configSheet = [[NSWindow alloc] initWithContentRect:frame
                                                    styleMask:(NSWindowStyleMaskTitled | NSWindowStyleMaskClosable)
                                                      backing:NSBackingStoreBuffered
@@ -738,17 +737,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.configSheet.title = @"Video Screen Saver Settings";
     NSView *contentView = self.configSheet.contentView;
 
-    // Setup all UI elements in a single pane
+    // Setup all UI elements using NSStackView
     [self setupSinglePaneUI:contentView];
-
-    // OK button
-    NSButton *okButton = [[NSButton alloc] initWithFrame:NSMakeRect(contentView.frame.size.width - 90, 15, 80, 32)];
-    okButton.title = @"OK";
-    okButton.bezelStyle = NSBezelStyleRounded;
-    okButton.keyEquivalent = @"\r";
-    okButton.target = self;
-    okButton.action = @selector(closeConfigSheet:);
-    [contentView addSubview:okButton];
 
     // Update UI with current values
     [self refreshUIFromDefaults];
@@ -760,25 +750,29 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 #pragma mark - UI Setup
 
 - (void)setupSinglePaneUI:(NSView *)contentView {
-    CGFloat currentY = contentView.frame.size.height - 20;
-    CGFloat contentWidth = contentView.frame.size.width - 40;
-    CGFloat leftMargin = 20;
+    // --- Main Vertical StackView ---
+    NSStackView *mainStack = [NSStackView new];
+    mainStack.orientation = NSUserInterfaceLayoutOrientationVertical;
+    mainStack.spacing = 12; // Spacing between sections
+    mainStack.edgeInsets = NSEdgeInsetsMake(20, 20, 20, 20);
+    mainStack.translatesAutoresizingMaskIntoConstraints = NO;
+    [contentView addSubview:mainStack];
 
     // --- Source Folders ---
     CGFloat tableHeight = 115;
-    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(leftMargin, currentY - tableHeight, contentWidth, tableHeight)];
+    NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 0, tableHeight)];
     foldersScrollView.hasVerticalScroller = YES;
     foldersScrollView.borderType = NSBezelBorder;
+    [foldersScrollView.heightAnchor constraintEqualToConstant:tableHeight].active = YES;
 
     self.foldersTableView = [[NSTableView alloc] initWithFrame:foldersScrollView.bounds];
     NSTableColumn *folderColumn = [[NSTableColumn alloc] initWithIdentifier:@"folder"];
-    folderColumn.width = foldersScrollView.frame.size.width - 4;
     [self.foldersTableView addTableColumn:folderColumn];
     self.foldersTableView.headerView = nil;
     self.foldersTableView.delegate = self;
     self.foldersTableView.dataSource = self;
     foldersScrollView.documentView = self.foldersTableView;
-    [contentView addSubview:foldersScrollView];
+    [mainStack addArrangedSubview:foldersScrollView];
 
     self.emptyStateLabel = [[NSTextField alloc] initWithFrame:foldersScrollView.frame];
     self.emptyStateLabel.stringValue = @"No video folders configured.\nClick + to add one.";
@@ -787,106 +781,117 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.emptyStateLabel.editable = NO;
     self.emptyStateLabel.bordered = NO;
     self.emptyStateLabel.backgroundColor = [NSColor clearColor];
-    [contentView addSubview:self.emptyStateLabel];
+    [contentView addSubview:self.emptyStateLabel]; // Add as overlay, not in stack
 
-    currentY -= tableHeight + 10;
+    // --- Folder Controls Row ---
+    NSStackView *folderControlsStack = [NSStackView new];
+    folderControlsStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    folderControlsStack.spacing = 8;
 
-    // --- Folder Controls ---
     NSButton *addButton = [NSButton buttonWithTitle:@"+" target:self action:@selector(addFolderClicked:)];
-    addButton.frame = NSMakeRect(leftMargin, currentY, 32, 32);
     [addButton setBezelStyle:NSBezelStyleRounded];
-    [contentView addSubview:addButton];
+    [folderControlsStack addArrangedSubview:addButton];
 
     NSButton *removeButton = [NSButton buttonWithTitle:@"-" target:self action:@selector(removeFolderClicked:)];
-    removeButton.frame = NSMakeRect(leftMargin + 40, currentY, 32, 32);
     [removeButton setBezelStyle:NSBezelStyleRounded];
-    [contentView addSubview:removeButton];
+    [folderControlsStack addArrangedSubview:removeButton];
 
-    self.recursiveScanCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(contentWidth - 155, currentY + 5, 170, 24)];
-    [self.recursiveScanCheckbox setButtonType:NSButtonTypeSwitch];
-    self.recursiveScanCheckbox.title = @"Search Subfolders";
-    self.recursiveScanCheckbox.target = self;
-    self.recursiveScanCheckbox.action = @selector(recursiveScanCheckboxClicked:);
-    [contentView addSubview:self.recursiveScanCheckbox];
+    [folderControlsStack addView:[NSView new] inGravity:NSStackViewGravityCenter]; // Spacer
 
-    currentY -= 32 + 5; // Control height + padding
+    self.recursiveScanCheckbox = [NSButton buttonWithSwitchWithTitle:@"Search Subfolders" target:self action:@selector(recursiveScanCheckboxClicked:)];
+    [folderControlsStack addArrangedSubview:self.recursiveScanCheckbox];
+    [mainStack addArrangedSubview:folderControlsStack];
 
     // --- Statistics ---
-    self.statsLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 40, contentWidth, 40)];
-    self.statsLabel.stringValue = @"Calculating...";
+    self.statsLabel = [NSTextField labelWithString:@"Calculating..."];
     self.statsLabel.alignment = NSTextAlignmentLeft;
     self.statsLabel.textColor = [NSColor secondaryLabelColor];
-    self.statsLabel.editable = NO;
-    self.statsLabel.bordered = NO;
-    self.statsLabel.drawsBackground = NO;
-    [contentView addSubview:self.statsLabel];
-    currentY -= 40 + 5; // Control height + padding
+    [mainStack addArrangedSubview:self.statsLabel];
 
-    // --- Playback ---
-    self.enableAudioCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 120, 24)];
-    [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
-    self.enableAudioCheckbox.title = @"Enable Audio";
-    self.enableAudioCheckbox.target = self;
-    self.enableAudioCheckbox.action = @selector(settingCheckboxClicked:);
-    [contentView addSubview:self.enableAudioCheckbox];
+    // --- Playback Row ---
+    NSStackView *playbackStack = [NSStackView new];
+    playbackStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    playbackStack.distribution = NSStackViewDistributionFillEqually;
+    self.enableAudioCheckbox = [NSButton buttonWithSwitchWithTitle:@"Enable Audio" target:self action:@selector(settingCheckboxClicked:)];
+    self.shuffleCheckbox = [NSButton buttonWithSwitchWithTitle:@"Shuffle Videos" target:self action:@selector(settingCheckboxClicked:)];
+    self.loopCheckbox = [NSButton buttonWithSwitchWithTitle:@"Loop Playlist" target:self action:@selector(settingCheckboxClicked:)];
+    [playbackStack addArrangedSubview:self.enableAudioCheckbox];
+    [playbackStack addArrangedSubview:self.shuffleCheckbox];
+    [playbackStack addArrangedSubview:self.loopCheckbox];
+    [mainStack addArrangedSubview:playbackStack];
 
-    self.shuffleCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin + 160, currentY - 24, 120, 24)];
-    [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
-    self.shuffleCheckbox.title = @"Shuffle Videos";
-    self.shuffleCheckbox.target = self;
-    self.shuffleCheckbox.action = @selector(settingCheckboxClicked:);
-    [contentView addSubview:self.shuffleCheckbox];
-
-    self.loopCheckbox = [[NSButton alloc] initWithFrame:NSMakeRect(leftMargin + 320, currentY - 24, 120, 24)];
-    [self.loopCheckbox setButtonType:NSButtonTypeSwitch];
-    self.loopCheckbox.title = @"Loop Playlist";
-    self.loopCheckbox.target = self;
-    self.loopCheckbox.action = @selector(settingCheckboxClicked:);
-    [contentView addSubview:self.loopCheckbox];
-
-    currentY -= 24 + 5; // Control height + padding
-
-    // --- Display ---
-    NSTextField *scalingLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
-    scalingLabel.stringValue = @"Video Scaling:";
-    scalingLabel.editable = NO; scalingLabel.bezeled = NO; scalingLabel.drawsBackground = NO;
-    [contentView addSubview:scalingLabel];
-
-    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
+    // --- Display Rows ---
+    self.scalingPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [self.scalingPopUpButton addItemsWithTitles:@[@"Fill Screen", @"Fit to Screen", @"Stretch"]];
     self.scalingPopUpButton.target = self;
     self.scalingPopUpButton.action = @selector(scalingChanged:);
-    [contentView addSubview:self.scalingPopUpButton];
+    NSStackView *scalingStack = [self createLabelledControlStack:@"Video Scaling:" control:self.scalingPopUpButton];
+    [mainStack addArrangedSubview:scalingStack];
 
-    currentY -= 30;
-
-    NSTextField *transitionLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
-    transitionLabel.stringValue = @"Transition:";
-    transitionLabel.editable = NO; transitionLabel.bezeled = NO; transitionLabel.drawsBackground = NO;
-    [contentView addSubview:transitionLabel];
-
-    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
+    self.transitionPopUpButton = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [self.transitionPopUpButton addItemsWithTitles:@[@"None", @"Fade", @"Cross Dissolve"]];
     self.transitionPopUpButton.target = self;
     self.transitionPopUpButton.action = @selector(transitionChanged:);
-    [contentView addSubview:self.transitionPopUpButton];
+    NSStackView *transitionStack = [self createLabelledControlStack:@"Transition:" control:self.transitionPopUpButton];
+    [mainStack addArrangedSubview:transitionStack];
 
-    currentY -= 30;
-
-    NSTextField *durationTitleLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin, currentY - 24, 100, 24)];
-    durationTitleLabel.stringValue = @"Duration:";
-    durationTitleLabel.editable = NO; durationTitleLabel.bezeled = NO; durationTitleLabel.drawsBackground = NO;
-    [contentView addSubview:durationTitleLabel];
-
-    self.durationSlider = [[NSSlider alloc] initWithFrame:NSMakeRect(leftMargin + 100, currentY - 24, 200, 24)];
+    self.durationSlider = [[NSSlider alloc] init];
     self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
-    self.durationSlider.target = self;
-    self.durationSlider.action = @selector(sliderValueChanged:);
-    [contentView addSubview:self.durationSlider];
+    self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
+    self.durationLabel = [NSTextField labelWithString:@"0.0 s"];
+    [self.durationLabel.widthAnchor constraintEqualToConstant:50].active = YES;
+    NSStackView *durationStack = [self createLabelledControlStack:@"Duration:" control:self.durationSlider secondControl:self.durationLabel];
+    [mainStack addArrangedSubview:durationStack];
+    
+    // --- OK Button ---
+    NSButton *okButton = [[NSButton alloc] init];
+    okButton.title = @"OK";
+    okButton.bezelStyle = NSBezelStyleRounded;
+    okButton.keyEquivalent = @"\r";
+    okButton.target = self;
+    okButton.action = @selector(closeConfigSheet:);
+    
+    NSStackView *okButtonStack = [NSStackView stackViewWithViews:@[[NSView new], okButton]];
+    okButtonStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    [mainStack addArrangedSubview:okButtonStack];
 
-    self.durationLabel = [[NSTextField alloc] initWithFrame:NSMakeRect(leftMargin + 310, currentY - 24, 100, 24)];
-    self.durationLabel.editable = NO; self.durationLabel.bezeled = NO; self.durationLabel.drawsBackground = NO;
-    [contentView addSubview:self.durationLabel];
+    // --- Finalize Layout ---
+    [NSLayoutConstraint activateConstraints:@[[
+        mainStack.topAnchor constraintEqualToAnchor:contentView.topAnchor],
+        [mainStack.bottomAnchor constraintEqualToAnchor:contentView.bottomAnchor],
+        [mainStack.leadingAnchor constraintEqualToAnchor:contentView.leadingAnchor],
+        [mainStack.trailingAnchor constraintEqualToAnchor:contentView.trailingAnchor]
+    ]];
+
+    // Adjust window size to fit content
+    NSRect newFrame = [self.configSheet frameRectForContentRect:mainStack.fittingSize];
+    [self.configSheet setFrame:newFrame display:YES];
+}
+
+// Helper to create a consistent row with a label and one or two controls
+- (NSStackView *)createLabelledControlStack:(NSString *)title control:(NSView *)control {
+    return [self createLabelledControlStack:title control:control secondControl:nil];
+}
+
+- (NSStackView *)createLabelledControlStack:(NSString *)title control:(NSView *)control secondControl:(NSView *)secondControl {
+    NSStackView *stack = [NSStackView new];
+    stack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    stack.spacing = 8;
+    stack.alignment = NSLayoutAttributeCenterY;
+
+    NSTextField *label = [NSTextField labelWithString:title];
+    [label.widthAnchor constraintEqualToConstant:100].active = YES;
+    label.alignment = NSTextAlignmentRight;
+
+    [stack addArrangedSubview:label];
+    [stack addArrangedSubview:control];
+    if (secondControl) {
+        [stack addArrangedSubview:secondControl];
+    } else {
+        // Add a spacer if there's no second control to keep alignment consistent
+        [stack addView:[NSView new] inGravity:NSStackViewGravityCenter];
+    }
+    return stack;
 }
 
 - (void)refreshUIFromDefaults {
