@@ -17,17 +17,25 @@
 // UserDefaults Keys
 static NSString * const kVideoFolderBookmarkKey = @"videoFolderBookmark";
 static NSString * const kVideoFoldersBookmarksKey = @"videoFoldersBookmarks"; // Array of bookmarks
-static NSString * const kEnableAudioKey = @"enableAudio";
 static NSString * const kShuffleKey = @"shuffle";
 static NSString * const kLoopKey = @"loop";
 static NSString * const kTransitionTypeKey = @"transitionType";
 static NSString * const kTransitionDurationKey = @"transitionDuration";
 static NSString * const kVideoScalingKey = @"videoScaling";
 static NSString * const kRecursiveScanKey = @"recursiveScan";
-static NSString * const kVolumeKey = @"volume";
 
 // KVO context
 static void * const kPlayerItemStatusContext = (void*)&kPlayerItemStatusContext;
+
+// Animation and Performance Constants
+static const NSTimeInterval kAnimationInterval = 1.0;
+static const NSInteger kPreviewConcurrentLoadLimit = 2;
+static const NSInteger kNormalConcurrentLoadLimit = 4;
+
+// UI Constants
+static const CGFloat kFolderTableHeight = 115.0;
+static const double kMinTransitionDuration = 0.5;
+static const double kMaxTransitionDuration = 5.0;
 
 typedef NS_ENUM(NSInteger, TransitionType) {
     TransitionTypeNone,
@@ -46,7 +54,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 // Configuration Sheet Properties
 @property (strong) NSWindow *configSheet;
 @property (strong) NSTextField *folderLabel;
-@property (strong) NSButton *enableAudioCheckbox;
 @property (strong) NSButton *shuffleCheckbox;
 @property (strong) NSButton *loopCheckbox;
 @property (strong) NSPopUpButton *transitionPopUpButton;
@@ -54,8 +61,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSTextField *durationLabel;
 @property (strong) NSPopUpButton *scalingPopUpButton;
 @property (strong) NSButton *recursiveScanCheckbox;
-@property (strong) NSSlider *volumeSlider;
-@property (strong) NSTextField *volumeLabel;
 
 // Single-pane UI Properties
 @property (strong) NSTableView *foldersTableView;
@@ -97,7 +102,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     if (self) {
         // AVPlayer handles its own rendering - we only need occasional checks
         // Reduce from 30fps to 1fps to minimize CPU overhead
-        [self setAnimationTimeInterval:1.0];
+        [self setAnimationTimeInterval:kAnimationInterval];
         self.wantsLayer = YES;
 
         // Initialize observer tracking
@@ -251,7 +256,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.isPreparingNextVideo = NO;
 }
 
-- (void)animateOneFrame { }
+- (void)animateOneFrame {
+    // Intentionally empty.
+    // AVPlayer and AVPlayerLayer handle all video rendering automatically on their own threads.
+    // The animation timer is set to a low frequency (1fps) for periodic checks, not for drawing.
+}
 
 - (void)loadPlaylistAndStartPlayback {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
@@ -278,6 +287,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                     NSArray<NSURL *> *folderVideos = [self getVideoURLsFromFolder:folderURL];
                     [allVideoURLs addObjectsFromArray:folderVideos];
                     [folderURL stopAccessingSecurityScopedResource];
+                } else {
+                    os_log_error(OS_LOG_DEFAULT, "VideoScreenSaver: Failed to access security-scoped folder: %@", folderURL);
                 }
             }
         }
@@ -313,6 +324,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             self.currentVideoIndex = -1;
             [self prepareNextVideo];
         }];
+    } else {
+        [self showNoVideosFoundMessage];
     }
 }
 
@@ -380,14 +393,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         AVPlayerItem *playerItem = (AVPlayerItem *)object;
         if (playerItem.status == AVPlayerItemStatusReadyToPlay) {
             // The item is buffered and ready. We can now transition.
-            // Remove the observer now that we've handled the status change
-            if ([self.observedItems containsObject:playerItem]) {
-                @try {
-                    [playerItem removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
-                    [self.observedItems removeObject:playerItem];
-                } @catch (NSException *exception) {}
-            }
-
             BOOL isPlayerA = (playerItem == self.playerItemA);
             AVPlayer *newPlayer = isPlayerA ? self.playerA : self.playerB;
             NSView *newView = isPlayerA ? self.playerViewA : self.playerViewB;
@@ -407,10 +412,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             }
             
             // Configure and start the new player.
-            ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
-            // Force mute all players unconditionally to solve audio issues.
-            self.activePlayer.muted = YES;
-            self.activePlayer.volume = 0.0;
             [self.activePlayer play];
 
             // Set up observers to prepare the *next* video.
@@ -542,6 +543,18 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 #pragma mark - Helper Methods
 
+- (void)showNoVideosFoundMessage {
+    CATextLayer *textLayer = [CATextLayer layer];
+    textLayer.string = @"No videos found in the selected folders.\n\nPlease open Screen Saver settings and add video folders.";
+    textLayer.font = (__bridge CFTypeRef)@"Helvetica";
+    textLayer.fontSize = 24.0;
+    textLayer.alignmentMode = kCAAlignmentCenter;
+    textLayer.foregroundColor = [NSColor whiteColor].CGColor;
+    textLayer.frame = self.bounds;
+    textLayer.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    [self.layer addSublayer:textLayer];
+}
+
 - (NSArray<NSURL *> *)getVideoURLsFromFolder:(NSURL *)folderURL {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     BOOL recursiveScan = [defaults boolForKey:kRecursiveScanKey];
@@ -635,7 +648,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     dispatch_group_t group = dispatch_group_create();
 
     // In preview mode or with many videos, limit the number of concurrent loads
-    dispatch_semaphore_t semaphore = dispatch_semaphore_create(self.isPreview ? 2 : 4);
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(self.isPreview ? kPreviewConcurrentLoadLimit : kNormalConcurrentLoadLimit);
 
     for (NSURL *url in self.videoURLs) {
         dispatch_group_enter(group);
@@ -690,7 +703,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                                                    relativeToURL:nil
                                              bookmarkDataIsStale:NULL
                                                            error:NULL];
-            if (!folderURL || ![folderURL startAccessingSecurityScopedResource]) continue;
+            if (!folderURL) continue;
+            if (![folderURL startAccessingSecurityScopedResource]) {
+                os_log_error(OS_LOG_DEFAULT, "VideoScreenSaver: Failed to access security-scoped folder for stats: %@", folderURL);
+                continue;
+            }
 
             NSDirectoryEnumerator<NSURL *> *enumerator = [fm enumeratorAtURL:folderURL
                                                   includingPropertiesForKeys:@[NSURLContentTypeKey, NSURLIsDirectoryKey]
@@ -725,9 +742,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [folderURL stopAccessingSecurityScopedResource];
         }
 
-        dispatch_group_wait(durationGroup, DISPATCH_TIME_FOREVER);
-
-        dispatch_async(dispatch_get_main_queue(), ^{
+        dispatch_group_notify(durationGroup, dispatch_get_main_queue(), ^{
             NSString *durationString = [self formatDuration:totalDuration];
             self.statsLabel.stringValue = [NSString stringWithFormat:@"%ld Folders  •  %ld Subfolders  •  %ld Videos  •  Total Duration: %@",
                                            (long)bookmarks.count,
@@ -800,7 +815,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [contentView addSubview:mainStack];
 
     // --- Source Folders ---
-    CGFloat tableHeight = 115;
+    CGFloat tableHeight = kFolderTableHeight;
     NSScrollView *foldersScrollView = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 0, tableHeight)];
     foldersScrollView.hasVerticalScroller = YES;
     foldersScrollView.borderType = NSBezelBorder;
@@ -884,11 +899,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     NSStackView *playbackStack = [NSStackView new];
     playbackStack.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     playbackStack.distribution = NSStackViewDistributionFillEqually;
-    self.enableAudioCheckbox = [[NSButton alloc] init];
-    [self.enableAudioCheckbox setButtonType:NSButtonTypeSwitch];
-    self.enableAudioCheckbox.title = @"Enable Audio";
-    self.enableAudioCheckbox.state = NSControlStateValueOff;
-    self.enableAudioCheckbox.enabled = NO;
     self.shuffleCheckbox = [[NSButton alloc] init];
     [self.shuffleCheckbox setButtonType:NSButtonTypeSwitch];
     self.shuffleCheckbox.title = @"Shuffle Videos";
@@ -899,13 +909,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.loopCheckbox.title = @"Loop Playlist";
     self.loopCheckbox.target = self;
     self.loopCheckbox.action = @selector(settingCheckboxClicked:);
-    [playbackStack addArrangedSubview:self.enableAudioCheckbox];
     [playbackStack addArrangedSubview:self.shuffleCheckbox];
     [playbackStack addArrangedSubview:self.loopCheckbox];
     [mainStack addArrangedSubview:playbackStack];
 
-    // --- Volume Slider (Removed) ---
-    
     // --- Section Separator ---
     NSBox *separator3 = [[NSBox alloc] init];
     separator3.boxType = NSBoxSeparator;
@@ -927,7 +934,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [mainStack addArrangedSubview:transitionStack];
 
     self.durationSlider = [[NSSlider alloc] init];
-    self.durationSlider.minValue = 0.5; self.durationSlider.maxValue = 5.0;
+    self.durationSlider.minValue = kMinTransitionDuration; self.durationSlider.maxValue = kMaxTransitionDuration;
     self.durationSlider.target = self; self.durationSlider.action = @selector(sliderValueChanged:);
     self.durationLabel = [[NSTextField alloc] init];
     self.durationLabel.stringValue = @"0.0 s";
