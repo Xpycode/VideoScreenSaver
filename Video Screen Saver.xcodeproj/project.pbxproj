@@ -101,7 +101,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastUpgradeCheck = 2600;
+				LastUpgradeCheck = 2610;
 				TargetAttributes = {
 					239C729C2E3786EF00D203B1 = {
 						CreatedOnToolsVersion = 16.4;
@@ -156,7 +156,8 @@
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_OPTIMIZATION_LEVEL = 0;
 				INFOPLIST_FILE = "Video Screen Saver/Info.plist";
-				PRODUCT_BUNDLE_IDENTIFIER = "com.example.VideoScreenSaver";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.VideoScreenSaver;
 				PRODUCT_NAME = "Video Screen Saver";
 				WRAPPER_EXTENSION = saver;
 			};
@@ -216,6 +217,8 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 			};
 			name = Debug;
 		};

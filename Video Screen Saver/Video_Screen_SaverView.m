@@ -1271,6 +1271,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 #pragma mark - NSTableView Delegate
 
+- (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row {
+    return 22.0; // Standard row height for better text centering
+}
+
 - (NSString *)tableView:(NSTableView *)tableView toolTipForCell:(NSCell *)cell rect:(NSRectPointer)rect tableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row mouseLocation:(NSPoint)mouseLocation {
     if (row < self.folderBookmarks.count) {
         NSData *bookmarkData = self.folderBookmarks[row];
