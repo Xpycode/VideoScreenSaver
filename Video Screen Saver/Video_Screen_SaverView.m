@@ -823,8 +823,16 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     self.foldersTableView = [[NSTableView alloc] initWithFrame:foldersScrollView.bounds];
     NSTableColumn *folderColumn = [[NSTableColumn alloc] initWithIdentifier:@"folder"];
+
+    // Configure the cell for proper vertical centering
+    NSTextFieldCell *cell = [[NSTextFieldCell alloc] init];
+    cell.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
+    [cell setControlSize:NSControlSizeRegular];
+    folderColumn.dataCell = cell;
+
     [self.foldersTableView addTableColumn:folderColumn];
     self.foldersTableView.headerView = nil;
+    self.foldersTableView.rowHeight = 20.0; // Standard row height for proper centering
     self.foldersTableView.delegate = self;
     self.foldersTableView.dataSource = self;
     foldersScrollView.documentView = self.foldersTableView;
@@ -1270,10 +1278,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 #pragma mark - NSTableView Delegate
-
-- (CGFloat)tableView:(NSTableView *)tableView heightOfRow:(NSInteger)row {
-    return 22.0; // Standard row height for better text centering
-}
 
 - (NSString *)tableView:(NSTableView *)tableView toolTipForCell:(NSCell *)cell rect:(NSRectPointer)rect tableColumn:(NSTableColumn *)tableColumn row:(NSInteger)row mouseLocation:(NSPoint)mouseLocation {
     if (row < self.folderBookmarks.count) {
