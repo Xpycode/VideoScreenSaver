@@ -63,7 +63,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 // Configuration Sheet Properties
 @property (strong) NSWindow *configSheet;
-@property (strong) NSTextField *folderLabel;
 @property (strong) NSButton *shuffleCheckbox;
 @property (strong) NSButton *loopCheckbox;
 @property (strong) NSPopUpButton *transitionPopUpButton;
@@ -103,6 +102,12 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 // KVO tracking - use a set to track all observed items
 @property (strong) NSMutableSet<AVPlayerItem *> *observedItems;
 
+// Security-scoped resource tracking - keeps folder access open during playback
+@property (strong) NSMutableSet<NSURL *> *accessedFolderURLs;
+
+// Message text layer tracking - for cleanup on restart
+@property (strong) CATextLayer *messageTextLayer;
+
 @end
 
 @implementation Video_Screen_SaverView
@@ -119,7 +124,10 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         // Initialize observer tracking
         self.observedItems = [NSMutableSet set];
 
-        ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+        // Initialize security-scoped resource tracking
+        self.accessedFolderURLs = [NSMutableSet set];
+
+        ScreenSaverDefaults *defaults = [self screenSaverDefaults];
         [defaults registerDefaults:@{
             kShuffleKey: @NO,
             kLoopKey: @YES,
@@ -157,7 +165,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     // --- Create Player Infrastructure ---
     // This is done here to ensure a clean slate every time the screensaver starts.
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
 
     self.playerA = [[AVPlayer alloc] init];
     self.playerB = [[AVPlayer alloc] init];
@@ -186,8 +194,8 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.playerLayerA.videoGravity = videoGravity;
     self.playerLayerB.videoGravity = videoGravity;
 
-    self.playerLayerA.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
-    self.playerLayerB.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    self.playerLayerA.contentsScale = [self currentBackingScaleFactor];
+    self.playerLayerB.contentsScale = [self currentBackingScaleFactor];
     // --- End Player Infrastructure ---
 
     // Ensure at least one player view is visible from the start
@@ -267,6 +275,15 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.videoURLs = nil;
     self.videoDurations = nil;
     self.isPreparingNextVideo = NO;
+
+    // 9. Release security-scoped folder access (kept open during playback)
+    for (NSURL *folderURL in self.accessedFolderURLs) {
+        [folderURL stopAccessingSecurityScopedResource];
+    }
+    [self.accessedFolderURLs removeAllObjects];
+
+    // 10. Remove message text layer if present
+    [self removeMessageTextLayer];
 }
 
 - (void)animateOneFrame {
@@ -276,11 +293,19 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (void)loadPlaylistAndStartPlayback {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
+
+    // Release any previously accessed folders before starting fresh
+    for (NSURL *folderURL in self.accessedFolderURLs) {
+        [folderURL stopAccessingSecurityScopedResource];
+    }
+    [self.accessedFolderURLs removeAllObjects];
 
     // Try new multiple folders format first
     NSArray *bookmarksArray = [defaults objectForKey:kVideoFoldersBookmarksKey];
     NSMutableArray<NSURL *> *allVideoURLs = [NSMutableArray array];
+    NSMutableArray<NSData *> *updatedBookmarks = [NSMutableArray array];
+    BOOL bookmarksNeedUpdate = NO;
 
     if (bookmarksArray != nil) {
         // New format exists (even if empty array) - use it
@@ -289,20 +314,52 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             for (id bookmarkObject in bookmarksArray) {
                 if (![bookmarkObject isKindOfClass:[NSData class]]) continue;
 
+                BOOL isStale = NO;
+                NSError *error = nil;
                 NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
                                                              options:NSURLBookmarkResolutionWithSecurityScope
                                                        relativeToURL:nil
-                                                 bookmarkDataIsStale:NULL
-                                                               error:NULL];
-                if (!folderURL) continue;
+                                                 bookmarkDataIsStale:&isStale
+                                                               error:&error];
+                if (!folderURL) {
+                    os_log_error(VideoScreenSaverLog(), "VideoScreenSaver: Failed to resolve bookmark: %@", error);
+                    continue;
+                }
 
                 if ([folderURL startAccessingSecurityScopedResource]) {
+                    // Track accessed folder for cleanup in stopAnimation
+                    [self.accessedFolderURLs addObject:folderURL];
+
                     NSArray<NSURL *> *folderVideos = [self getVideoURLsFromFolder:folderURL];
                     [allVideoURLs addObjectsFromArray:folderVideos];
-                    [folderURL stopAccessingSecurityScopedResource];
+                    // NOTE: Don't stop accessing - kept open for playback, released in stopAnimation
+
+                    // Regenerate stale bookmarks
+                    if (isStale) {
+                        NSData *newBookmark = [folderURL bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+                                                  includingResourceValuesForKeys:nil
+                                                                   relativeToURL:nil
+                                                                           error:&error];
+                        if (newBookmark) {
+                            [updatedBookmarks addObject:newBookmark];
+                            bookmarksNeedUpdate = YES;
+                            os_log(VideoScreenSaverLog(), "VideoScreenSaver: Regenerated stale bookmark for: %@", folderURL.path);
+                        } else {
+                            [updatedBookmarks addObject:bookmarkObject]; // Keep old if regeneration fails
+                        }
+                    } else {
+                        [updatedBookmarks addObject:bookmarkObject];
+                    }
                 } else {
                     os_log_error(VideoScreenSaverLog(), "VideoScreenSaver: Failed to access security-scoped folder: %@", folderURL);
+                    [updatedBookmarks addObject:bookmarkObject]; // Keep bookmark even if access fails
                 }
+            }
+
+            // Save updated bookmarks if any were stale
+            if (bookmarksNeedUpdate) {
+                [defaults setObject:updatedBookmarks forKey:kVideoFoldersBookmarksKey];
+                [defaults synchronize];
             }
         }
         // else: empty array means user removed all folders - don't migrate!
@@ -310,17 +367,29 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         // New format doesn't exist at all - try migration from legacy single folder
         id bookmarkObject = [defaults objectForKey:kVideoFolderBookmarkKey];
         if (bookmarkObject && [bookmarkObject isKindOfClass:[NSData class]]) {
+            BOOL isStale = NO;
             NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmarkObject
                                                          options:NSURLBookmarkResolutionWithSecurityScope
                                                    relativeToURL:nil
-                                             bookmarkDataIsStale:NULL
+                                             bookmarkDataIsStale:&isStale
                                                            error:NULL];
             if (folderURL && [folderURL startAccessingSecurityScopedResource]) {
-                allVideoURLs = [[self getVideoURLsFromFolder:folderURL] mutableCopy];
-                [folderURL stopAccessingSecurityScopedResource];
+                // Track accessed folder for cleanup in stopAnimation
+                [self.accessedFolderURLs addObject:folderURL];
 
-                // Migrate to new format
-                [defaults setObject:@[bookmarkObject] forKey:kVideoFoldersBookmarksKey];
+                allVideoURLs = [[self getVideoURLsFromFolder:folderURL] mutableCopy];
+                // NOTE: Don't stop accessing - kept open for playback, released in stopAnimation
+
+                // Migrate to new format (regenerate if stale)
+                NSData *newBookmark = bookmarkObject;
+                if (isStale) {
+                    NSData *regenerated = [folderURL bookmarkDataWithOptions:NSURLBookmarkCreationWithSecurityScope
+                                              includingResourceValuesForKeys:nil
+                                                               relativeToURL:nil
+                                                                       error:NULL];
+                    if (regenerated) newBookmark = regenerated;
+                }
+                [defaults setObject:@[newBookmark] forKey:kVideoFoldersBookmarksKey];
                 [defaults synchronize];
             }
         }
@@ -351,7 +420,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     
     NSInteger nextVideoIndex = self.currentVideoIndex + 1;
     if (nextVideoIndex >= self.videoURLs.count) {
-        if ([[ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"] boolForKey:kLoopKey]) {
+        if ([[self screenSaverDefaults] boolForKey:kLoopKey]) {
             nextVideoIndex = 0;
         } else {
             // Let the last video finish. We're not preparing another.
@@ -464,6 +533,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
             // If all videos have failed, show error message
             if (self.consecutiveFailures >= self.videoURLs.count) {
+                self.isPreparingNextVideo = NO; // Clear flag to allow recovery if playlist changes
                 [self showAllVideosFailedMessage];
                 return;
             }
@@ -478,7 +548,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (void)setupBoundaryTimeObserverForURL:(NSURL *)url {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     TransitionType transition = (TransitionType)[defaults integerForKey:kTransitionTypeKey];
     if (transition == TransitionTypeNone || self.videoURLs.count < 2) {
         return; // No need for an observer if there's no transition or only one video
@@ -520,7 +590,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:notification.object];
     
     BOOL isLastVideo = (self.currentVideoIndex == self.videoURLs.count - 1);
-    BOOL isLooping = [[ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"] boolForKey:kLoopKey];
+    BOOL isLooping = [[self screenSaverDefaults] boolForKey:kLoopKey];
 
     if (isLastVideo && !isLooping) {
         [self stopAnimation]; // Or let it sit on the last frame. Stopping seems cleaner.
@@ -530,7 +600,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (void)performTransitionFrom:(NSView *)oldView to:(NSView *)newView {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     TransitionType transition = (TransitionType)[defaults integerForKey:kTransitionTypeKey];
     double duration = [defaults doubleForKey:kTransitionDurationKey];
     
@@ -578,7 +648,45 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
 #pragma mark - Helper Methods
 
+// Cached access to ScreenSaverDefaults - reduces repeated module name lookups
+- (ScreenSaverDefaults *)screenSaverDefaults {
+    static ScreenSaverDefaults *_defaults;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        _defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    });
+    return _defaults;
+}
+
+// Helper to get UTType from content type value (handles macOS 26 API change)
+- (UTType *)typeFromContentTypeValue:(id)contentType {
+    if ([contentType isKindOfClass:[UTType class]]) {
+        return (UTType *)contentType;
+    } else if ([contentType isKindOfClass:[NSString class]]) {
+        return [UTType typeWithIdentifier:(NSString *)contentType];
+    }
+    return nil;
+}
+
+// Helper to get the appropriate backing scale factor for this view
+- (CGFloat)currentBackingScaleFactor {
+    if (self.isPreview) {
+        return 1.0;
+    }
+    // Prefer the window's screen for correct multi-monitor support
+    NSScreen *screen = self.window.screen ?: [NSScreen mainScreen];
+    return screen.backingScaleFactor;
+}
+
+- (void)removeMessageTextLayer {
+    if (self.messageTextLayer) {
+        [self.messageTextLayer removeFromSuperlayer];
+        self.messageTextLayer = nil;
+    }
+}
+
 - (void)showNoVideosFoundMessage {
+    [self removeMessageTextLayer]; // Remove any existing message first
     CATextLayer *textLayer = [CATextLayer layer];
     textLayer.string = @"No videos found in the selected folders.\n\nPlease open Screen Saver settings and add video folders.";
     textLayer.font = (__bridge CFTypeRef)@"Helvetica";
@@ -586,11 +694,13 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     textLayer.alignmentMode = kCAAlignmentCenter;
     textLayer.foregroundColor = [NSColor whiteColor].CGColor;
     textLayer.frame = self.bounds;
-    textLayer.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    textLayer.contentsScale = [self currentBackingScaleFactor];
     [self.layer addSublayer:textLayer];
+    self.messageTextLayer = textLayer; // Track for cleanup
 }
 
 - (void)showAllVideosFailedMessage {
+    [self removeMessageTextLayer]; // Remove any existing message first
     CATextLayer *textLayer = [CATextLayer layer];
     textLayer.string = @"Unable to play videos.\n\nAll video files failed to load. Please check that your video files are not corrupted.";
     textLayer.font = (__bridge CFTypeRef)@"Helvetica";
@@ -598,12 +708,13 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     textLayer.alignmentMode = kCAAlignmentCenter;
     textLayer.foregroundColor = [NSColor whiteColor].CGColor;
     textLayer.frame = self.bounds;
-    textLayer.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    textLayer.contentsScale = [self currentBackingScaleFactor];
     [self.layer addSublayer:textLayer];
+    self.messageTextLayer = textLayer; // Track for cleanup
 }
 
 - (NSArray<NSURL *> *)getVideoURLsFromFolder:(NSURL *)folderURL {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     BOOL recursiveScan = [defaults boolForKey:kRecursiveScanKey];
 
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -633,14 +744,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
 
             if (contentType && !utiError) {
-                UTType *type = nil;
-                // macOS 26 returns UTType directly, older versions return NSString
-                if ([contentType isKindOfClass:[UTType class]]) {
-                    type = (UTType *)contentType;
-                } else if ([contentType isKindOfClass:[NSString class]]) {
-                    type = [UTType typeWithIdentifier:(NSString *)contentType];
-                }
-
+                UTType *type = [self typeFromContentTypeValue:contentType];
                 if (type && [type conformsToType:UTTypeMovie]) {
                     [videoURLs addObject:fileURL];
                 }
@@ -664,14 +768,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:&utiError];
 
             if (contentType && !utiError) {
-                UTType *type = nil;
-                // macOS 26 returns UTType directly, older versions return NSString
-                if ([contentType isKindOfClass:[UTType class]]) {
-                    type = (UTType *)contentType;
-                } else if ([contentType isKindOfClass:[NSString class]]) {
-                    type = [UTType typeWithIdentifier:(NSString *)contentType];
-                }
-
+                UTType *type = [self typeFromContentTypeValue:contentType];
                 if (type && [type conformsToType:UTTypeMovie]) {
                     [videoURLs addObject:fileURL];
                 }
@@ -733,7 +830,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (void)calculateStatistics {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     BOOL recursive = [defaults boolForKey:kRecursiveScanKey];
     NSArray<NSData *> *bookmarks = [self.folderBookmarks copy];
 
@@ -743,6 +840,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         __block double totalDuration = 0;
         NSFileManager *fm = [NSFileManager defaultManager];
         dispatch_group_t durationGroup = dispatch_group_create();
+
+        // Track accessed folders to release after async duration loads complete
+        NSMutableArray<NSURL *> *accessedFolders = [NSMutableArray array];
 
         for (NSData *bookmark in bookmarks) {
             NSURL *folderURL = [NSURL URLByResolvingBookmarkData:bookmark
@@ -755,6 +855,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                 os_log_error(VideoScreenSaverLog(), "VideoScreenSaver: Failed to access security-scoped folder for stats: %@", folderURL);
                 continue;
             }
+            [accessedFolders addObject:folderURL];
 
             NSDirectoryEnumerator<NSURL *> *enumerator = [fm enumeratorAtURL:folderURL
                                                   includingPropertiesForKeys:@[NSURLContentTypeKey, NSURLIsDirectoryKey]
@@ -772,7 +873,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                 } else {
                     id contentType = nil;
                     [fileURL getResourceValue:&contentType forKey:NSURLContentTypeKey error:nil];
-                    UTType *type = [contentType isKindOfClass:[UTType class]] ? (UTType *)contentType : [UTType typeWithIdentifier:(NSString *)contentType];
+                    UTType *type = [self typeFromContentTypeValue:contentType];
                     if (type && [type conformsToType:UTTypeMovie]) {
                         videoCount++;
                         dispatch_group_enter(durationGroup);
@@ -788,10 +889,15 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                     }
                 }
             }
-            [folderURL stopAccessingSecurityScopedResource];
+            // NOTE: Don't stop accessing here - duration loads are still in progress
         }
 
         dispatch_group_notify(durationGroup, dispatch_get_main_queue(), ^{
+            // Release security scope now that all async loads are complete
+            for (NSURL *folderURL in accessedFolders) {
+                [folderURL stopAccessingSecurityScopedResource];
+            }
+
             NSString *durationString = [self formatDuration:totalDuration];
             self.statsLabel.stringValue = [NSString stringWithFormat:@"%ld Folders  •  %ld Subfolders  •  %ld Videos  •  Total Duration: %@",
                                            (long)bookmarks.count,
@@ -828,7 +934,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     }
 
     // ALWAYS reload from UserDefaults
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     NSArray *savedBookmarks = [defaults objectForKey:kVideoFoldersBookmarksKey];
     self.folderBookmarks = savedBookmarks ? [savedBookmarks mutableCopy] : [NSMutableArray array];
 
@@ -1069,7 +1175,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (void)refreshUIFromDefaults {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
 
     // Update checkboxes if they exist
     if (self.shuffleCheckbox) {
@@ -1192,14 +1298,14 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (void)saveFolderBookmarks {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     [defaults setObject:self.folderBookmarks forKey:kVideoFoldersBookmarksKey];
     [defaults synchronize];
 }
 
 
 - (IBAction)settingCheckboxClicked:(NSButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     NSString *key = nil;
     if (sender == self.shuffleCheckbox) key = kShuffleKey;
     else if (sender == self.loopCheckbox) key = kLoopKey;
@@ -1214,7 +1320,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (IBAction)recursiveScanCheckboxClicked:(NSButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     BOOL isEnabled = (sender.state == NSControlStateValueOn);
     [defaults setBool:isEnabled forKey:kRecursiveScanKey];
     [defaults synchronize];
@@ -1227,7 +1333,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (IBAction)transitionChanged:(NSPopUpButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     NSInteger selectedTransition = sender.indexOfSelectedItem;
     [defaults setInteger:selectedTransition forKey:kTransitionTypeKey];
     [defaults synchronize];
@@ -1237,7 +1343,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (IBAction)sliderValueChanged:(NSSlider *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     [defaults setDouble:sender.doubleValue forKey:kTransitionDurationKey];
     [defaults synchronize];
     [self updateDurationLabel];
@@ -1286,7 +1392,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 }
 
 - (IBAction)scalingChanged:(NSPopUpButton *)sender {
-    ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
+    ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     NSInteger selectedScaling = sender.indexOfSelectedItem;
     [defaults setInteger:selectedScaling forKey:kVideoScalingKey];
     [defaults synchronize];
