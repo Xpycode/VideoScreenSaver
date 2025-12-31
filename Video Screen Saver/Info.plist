@@ -6,10 +6,11 @@
     <string>en</string>
     <key>CFBundleExecutable</key>
     <string>Video Screen Saver</string>
-    	<key>CFBundleIdentifier</key>
-    	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+    <key>CFBundleIdentifier</key>
+    <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
     <key>CFBundleIconFile</key>
-    <string>AppIcon.icns</string>    <key>CFBundleInfoDictionaryVersion</key>
+    <string>AppIcon.icns</string>
+    <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>Video Screen Saver</string>

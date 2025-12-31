@@ -37,6 +37,16 @@ static const CGFloat kFolderTableHeight = 115.0;
 static const double kMinTransitionDuration = 0.5;
 static const double kMaxTransitionDuration = 5.0;
 
+// Custom logging subsystem for better Console.app filtering
+static os_log_t VideoScreenSaverLog(void) {
+    static os_log_t log;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        log = os_log_create("com.lucesumbrarum.VideoScreenSaver", "playback");
+    });
+    return log;
+}
+
 typedef NS_ENUM(NSInteger, TransitionType) {
     TransitionTypeNone,
     TransitionTypeFade,
@@ -73,6 +83,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 @property (strong) NSDictionary<NSURL *, NSValue *> *videoDurations;
 @property (assign) NSInteger currentVideoIndex;
 @property (assign) BOOL isPreparingNextVideo; // Race condition guard
+@property (assign) NSInteger consecutiveFailures; // Track video load failures
 
 // Dual Player System for seamless transitions
 @property (strong) AVPlayer *playerA;
@@ -218,15 +229,17 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     }
 
     // 4. Safely remove all KVO observers. Iterate over a copy.
-    NSSet<AVPlayerItem *> *itemsToRemove = [self.observedItems copy];
-    for (AVPlayerItem *item in itemsToRemove) {
-        @try {
-            [item removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
-        } @catch (NSException *exception) {
-            // Ignore errors if observer isn't registered.
+    @synchronized(self.observedItems) {
+        NSSet<AVPlayerItem *> *itemsToRemove = [self.observedItems copy];
+        for (AVPlayerItem *item in itemsToRemove) {
+            @try {
+                [item removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
+            } @catch (NSException *exception) {
+                // Ignore errors if observer isn't registered.
+            }
         }
+        [self.observedItems removeAllObjects];
     }
-    [self.observedItems removeAllObjects];
 
     // 5. Detach player items from players. This is crucial to break retain cycles.
     [self.playerA replaceCurrentItemWithPlayerItem:nil];
@@ -288,7 +301,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                     [allVideoURLs addObjectsFromArray:folderVideos];
                     [folderURL stopAccessingSecurityScopedResource];
                 } else {
-                    os_log_error(OS_LOG_DEFAULT, "VideoScreenSaver: Failed to access security-scoped folder: %@", folderURL);
+                    os_log_error(VideoScreenSaverLog(), "VideoScreenSaver: Failed to access security-scoped folder: %@", folderURL);
                 }
             }
         }
@@ -358,16 +371,20 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.playerItemB];
         }
         // Remove KVO observer from old item if it exists
-        if (self.playerItemB && [self.observedItems containsObject:self.playerItemB]) {
-            @try {
-                [self.playerItemB removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
-                [self.observedItems removeObject:self.playerItemB];
-            } @catch (NSException *exception) {}
+        @synchronized(self.observedItems) {
+            if (self.playerItemB && [self.observedItems containsObject:self.playerItemB]) {
+                @try {
+                    [self.playerItemB removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
+                    [self.observedItems removeObject:self.playerItemB];
+                } @catch (NSException *exception) {}
+            }
         }
         self.playerItemB = playerItem;
         [self.playerB replaceCurrentItemWithPlayerItem:self.playerItemB];
         [self.playerItemB addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:kPlayerItemStatusContext];
-        [self.observedItems addObject:self.playerItemB];
+        @synchronized(self.observedItems) {
+            [self.observedItems addObject:self.playerItemB];
+        }
     } else {
         // Player A is inactive, prepare it.
         // ** CRITICAL: Remove observer from the old item BEFORE replacing it to prevent a retain cycle. **
@@ -375,16 +392,20 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [[NSNotificationCenter defaultCenter] removeObserver:self name:AVPlayerItemDidPlayToEndTimeNotification object:self.playerItemA];
         }
         // Remove KVO observer from old item if it exists
-        if (self.playerItemA && [self.observedItems containsObject:self.playerItemA]) {
-            @try {
-                [self.playerItemA removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
-                [self.observedItems removeObject:self.playerItemA];
-            } @catch (NSException *exception) {}
+        @synchronized(self.observedItems) {
+            if (self.playerItemA && [self.observedItems containsObject:self.playerItemA]) {
+                @try {
+                    [self.playerItemA removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
+                    [self.observedItems removeObject:self.playerItemA];
+                } @catch (NSException *exception) {}
+            }
         }
         self.playerItemA = playerItem;
         [self.playerA replaceCurrentItemWithPlayerItem:self.playerItemA];
         [self.playerItemA addObserver:self forKeyPath:@"status" options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew context:kPlayerItemStatusContext];
-        [self.observedItems addObject:self.playerItemA];
+        @synchronized(self.observedItems) {
+            [self.observedItems addObject:self.playerItemA];
+        }
     }
 }
 
@@ -418,19 +439,33 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [self setupBoundaryTimeObserverForURL:((AVURLAsset *)playerItem.asset).URL];
             [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerItemDidReachEnd:) name:AVPlayerItemDidPlayToEndTimeNotification object:playerItem];
 
+            // Reset failure counter on success
+            self.consecutiveFailures = 0;
+
             // Unlock to allow the next video to be prepared.
             self.isPreparingNextVideo = NO;
-            
+
         } else if (playerItem.status == AVPlayerItemStatusFailed) {
             // Handle failure. Log error and try the next video.
-            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Player item failed to load with error: %@", playerItem.error);
+            os_log(VideoScreenSaverLog(), "VideoScreenSaver: Player item failed to load with error: %@", playerItem.error);
 
             // Remove the observer for the failed item
-            if ([self.observedItems containsObject:playerItem]) {
-                @try {
-                    [playerItem removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
-                    [self.observedItems removeObject:playerItem];
-                } @catch (NSException *exception) {}
+            @synchronized(self.observedItems) {
+                if ([self.observedItems containsObject:playerItem]) {
+                    @try {
+                        [playerItem removeObserver:self forKeyPath:@"status" context:kPlayerItemStatusContext];
+                        [self.observedItems removeObject:playerItem];
+                    } @catch (NSException *exception) {}
+                }
+            }
+
+            // Track consecutive failures
+            self.consecutiveFailures++;
+
+            // If all videos have failed, show error message
+            if (self.consecutiveFailures >= self.videoURLs.count) {
+                [self showAllVideosFailedMessage];
+                return;
             }
 
             // Unlock and immediately try to prepare the next video in the playlist.
@@ -555,6 +590,18 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     [self.layer addSublayer:textLayer];
 }
 
+- (void)showAllVideosFailedMessage {
+    CATextLayer *textLayer = [CATextLayer layer];
+    textLayer.string = @"Unable to play videos.\n\nAll video files failed to load. Please check that your video files are not corrupted.";
+    textLayer.font = (__bridge CFTypeRef)@"Helvetica";
+    textLayer.fontSize = 24.0;
+    textLayer.alignmentMode = kCAAlignmentCenter;
+    textLayer.foregroundColor = [NSColor whiteColor].CGColor;
+    textLayer.frame = self.bounds;
+    textLayer.contentsScale = self.isPreview ? 1.0 : [[NSScreen mainScreen] backingScaleFactor];
+    [self.layer addSublayer:textLayer];
+}
+
 - (NSArray<NSURL *> *)getVideoURLsFromFolder:(NSURL *)folderURL {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     BOOL recursiveScan = [defaults boolForKey:kRecursiveScanKey];
@@ -568,7 +615,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                                               includingPropertiesForKeys:@[NSURLContentTypeKey, NSURLIsDirectoryKey]
                                                                  options:NSDirectoryEnumerationSkipsHiddenFiles
                                                             errorHandler:^BOOL(NSURL *url, NSError *error) {
-            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading %@: %@", url, error);
+            os_log(VideoScreenSaverLog(), "VideoScreenSaver: Error reading %@: %@", url, error);
             return YES; // Continue enumeration
         }];
 
@@ -607,7 +654,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                                                      options:NSDirectoryEnumerationSkipsHiddenFiles
                                                        error:&dirError];
         if (dirError) {
-            os_log(OS_LOG_DEFAULT, "VideoScreenSaver: Error reading directory: %@", dirError);
+            os_log(VideoScreenSaverLog(), "VideoScreenSaver: Error reading directory: %@", dirError);
             return @[];
         }
 
@@ -705,7 +752,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                                                            error:NULL];
             if (!folderURL) continue;
             if (![folderURL startAccessingSecurityScopedResource]) {
-                os_log_error(OS_LOG_DEFAULT, "VideoScreenSaver: Failed to access security-scoped folder for stats: %@", folderURL);
+                os_log_error(VideoScreenSaverLog(), "VideoScreenSaver: Failed to access security-scoped folder for stats: %@", folderURL);
                 continue;
             }
 
@@ -732,7 +779,9 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
                         AVAsset *asset = [AVAsset assetWithURL:fileURL];
                         [asset loadValuesAsynchronouslyForKeys:@[@"duration"] completionHandler:^{
                             if ([asset statusOfValueForKey:@"duration" error:nil] == AVKeyValueStatusLoaded) {
-                                totalDuration += CMTimeGetSeconds(asset.duration);
+                                @synchronized(durationGroup) {
+                                    totalDuration += CMTimeGetSeconds(asset.duration);
+                                }
                             }
                             dispatch_group_leave(durationGroup);
                         }];
@@ -1048,8 +1097,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         [self updateDurationLabel];
     }
 
-    // Update volume slider (Removed)
-
     // Reload folder table
     if (self.foldersTableView) {
         [self.foldersTableView reloadData];
@@ -1100,8 +1147,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
                         // Reload videos if in preview
                         if (self.isPreview) {
-                            [self stopAnimation];
-                            [self startAnimation];
+                            [self restartAnimationWithDelay];
                         }
                     }
                 }
@@ -1139,8 +1185,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             // If screensaver is currently running, reload the playlist immediately
             // Otherwise, it will pick up the new folder list on next start
             if (self.videoURLs && self.videoURLs.count > 0) {
-                [self stopAnimation];
-                [self startAnimation];
+                [self restartAnimationWithDelay];
             }
         }
     }];
@@ -1156,7 +1201,6 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 - (IBAction)settingCheckboxClicked:(NSButton *)sender {
     ScreenSaverDefaults *defaults = [ScreenSaverDefaults defaultsForModuleWithName:@"VideoScreenSaverModule"];
     NSString *key = nil;
-    // Audio checkbox is disabled, so no need to check for it.
     if (sender == self.shuffleCheckbox) key = kShuffleKey;
     else if (sender == self.loopCheckbox) key = kLoopKey;
     
@@ -1164,8 +1208,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
         [defaults setBool:(sender.state == NSControlStateValueOn) forKey:key];
         [defaults synchronize];
         if (self.isPreview && [key isEqualToString:kShuffleKey]) {
-            [self stopAnimation];
-            [self startAnimation];
+            [self restartAnimationWithDelay];
         }
     }
 }
@@ -1179,8 +1222,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     // Reload playlist if screensaver is running to apply the change immediately
     if (self.videoURLs && self.videoURLs.count > 0) {
-        [self stopAnimation];
-        [self startAnimation];
+        [self restartAnimationWithDelay];
     }
 }
 
@@ -1256,9 +1298,16 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
 
     // Reload videos if in preview to see the change
     if (self.isPreview) {
-        [self stopAnimation];
-        [self startAnimation];
+        [self restartAnimationWithDelay];
     }
+}
+
+// Helper to safely restart animation with a small delay to ensure cleanup completes
+- (void)restartAnimationWithDelay {
+    [self stopAnimation];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.1 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        [self startAnimation];
+    });
 }
 
 #pragma mark - NSTableView DataSource
