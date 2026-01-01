@@ -510,7 +510,7 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
             [self.activePlayer play];
 
             // Set up observers to prepare the *next* video.
-            [self setupBoundaryTimeObserverForURL:((AVURLAsset *)playerItem.asset).URL];
+            [self setupBoundaryTimeObserverForPlayer:self.activePlayer];
             [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(playerItemDidReachEnd:) name:AVPlayerItemDidPlayToEndTimeNotification object:playerItem];
 
             // Reset failure counter on success
@@ -552,39 +552,56 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     }
 }
 
-- (void)setupBoundaryTimeObserverForURL:(NSURL *)url {
+- (void)setupBoundaryTimeObserverForPlayer:(AVPlayer *)player {
     ScreenSaverDefaults *defaults = [self screenSaverDefaults];
     TransitionType transition = (TransitionType)[defaults integerForKey:kTransitionTypeKey];
     if (transition == TransitionTypeNone || self.videoURLs.count < 2) {
         return; // No need for an observer if there's no transition or only one video
     }
-    
-    NSValue *durationValue = self.videoDurations[url];
-    if (!durationValue) return;
 
-    CMTime videoDuration = [durationValue CMTimeValue];
-    double transitionDuration = [defaults doubleForKey:kTransitionDurationKey];
-    CMTime transitionTime = CMTimeMakeWithSeconds(transitionDuration, videoDuration.timescale);
-    CMTime boundaryTime = CMTimeSubtract(videoDuration, transitionTime);
-    
-    if (CMTIME_IS_INVALID(boundaryTime) || CMTimeCompare(boundaryTime, kCMTimeZero) < 0) {
-        return; // Video is shorter than the transition
+    // Use the actual player item's duration for accuracy (metadata can be wrong)
+    AVPlayerItem *currentItem = player.currentItem;
+    if (!currentItem) return;
+
+    CMTime videoDuration = currentItem.duration;
+    if (CMTIME_IS_INVALID(videoDuration) || CMTIME_IS_INDEFINITE(videoDuration)) {
+        return; // Duration not available
     }
-    
-    // Use a weak reference to self to prevent a retain cycle.
-    // The block can retain self, which retains the player, which retains the block.
+
+    double videoDurationSeconds = CMTimeGetSeconds(videoDuration);
+    double transitionDuration = [defaults doubleForKey:kTransitionDurationKey];
+
+    // Ensure video is long enough for a meaningful playback before transition
+    // Minimum 2 seconds of actual content before transition starts
+    static const double kMinimumPlaybackBeforeTransition = 2.0;
+    if (videoDurationSeconds < transitionDuration + kMinimumPlaybackBeforeTransition) {
+        os_log(VideoScreenSaverLog(), "Video too short (%.1fs) for transition (%.1fs), skipping boundary observer",
+               videoDurationSeconds, transitionDuration);
+        return; // Video is too short, let it play to end naturally
+    }
+
+    CMTime boundaryTime = CMTimeMakeWithSeconds(videoDurationSeconds - transitionDuration, videoDuration.timescale);
+
+    if (CMTIME_IS_INVALID(boundaryTime) || CMTimeCompare(boundaryTime, kCMTimeZero) <= 0) {
+        return; // Boundary time is invalid or at/before start
+    }
+
+    os_log(VideoScreenSaverLog(), "Setting boundary observer: video=%.1fs, transition=%.1fs, boundary=%.1fs",
+           videoDurationSeconds, transitionDuration, CMTimeGetSeconds(boundaryTime));
+
+    // Capture the player reference NOW to avoid race condition with activePlayer changing
     __weak typeof(self) weakSelf = self;
-    self.timeObserverToken = [self.activePlayer addBoundaryTimeObserverForTimes:@[[NSValue valueWithCMTime:boundaryTime]] queue:dispatch_get_main_queue() usingBlock:^{
-        // Create a strong reference to self for the scope of this block.
-        // If self is nil, we don't need to do anything.
+    __weak AVPlayer *weakPlayer = player;
+    self.timeObserverToken = [player addBoundaryTimeObserverForTimes:@[[NSValue valueWithCMTime:boundaryTime]] queue:dispatch_get_main_queue() usingBlock:^{
         __strong typeof(weakSelf) strongSelf = weakSelf;
-        if (!strongSelf) {
+        __strong AVPlayer *strongPlayer = weakPlayer;
+        if (!strongSelf || !strongPlayer) {
             return;
         }
 
-        // This block will be executed only once.
+        // Remove observer from the CAPTURED player, not activePlayer (which may have changed)
         if (strongSelf.timeObserverToken) {
-            [strongSelf.activePlayer removeTimeObserver:strongSelf.timeObserverToken];
+            [strongPlayer removeTimeObserver:strongSelf.timeObserverToken];
             strongSelf.timeObserverToken = nil;
         }
         [strongSelf prepareNextVideo];
