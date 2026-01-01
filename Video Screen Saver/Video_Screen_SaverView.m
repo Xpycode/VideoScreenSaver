@@ -180,6 +180,11 @@ typedef NS_ENUM(NSInteger, VideoScaling) {
     self.playerLayerA = [AVPlayerLayer playerLayerWithPlayer:self.playerA];
     self.playerLayerB = [AVPlayerLayer playerLayerWithPlayer:self.playerB];
 
+    // Set black background to prevent previous video from showing through
+    // when current video doesn't fill the screen (e.g., vertical videos)
+    self.playerLayerA.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+    self.playerLayerB.backgroundColor = CGColorGetConstantColor(kCGColorBlack);
+
     self.playerViewA = [[NSView alloc] initWithFrame:self.bounds];
     self.playerViewA.wantsLayer = YES;
     self.playerViewA.layer = self.playerLayerA;
