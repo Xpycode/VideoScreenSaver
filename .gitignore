@@ -1,12 +1,18 @@
-
+# macOS
 .DS_Store
+
+# Xcode
 xcuserdata/
 *.xcuserstate
 project.xcworkspace/
-xcuserdata/
 *.mode1v3
 *.mode2v3
 *.perspectivev3
 *.xcscheme
-# Log files
+
+# Build artifacts
+Releases/*.saver
+
+# Dev tools
+.serena/
 claude-log
